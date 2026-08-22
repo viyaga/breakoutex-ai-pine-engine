@@ -1,0 +1,185 @@
+﻿// ================================================================
+// Trade Executor — places entry + TP/SL bracket orders
+// Smart resolution for absolute prices vs point offsets
+// ================================================================
+
+import { DeltaClient, resolutionMs } from '../exchange/delta.client';
+import { PineTradeState, PineBotError } from '../models/tradeState.model';
+import { PineBotConfig, OrderSide } from '../config/types';
+
+function log(botId: string, msg: string) { console.log(`[TradeExec][${botId}] ${msg}`); }
+
+function clampDecimals(v: number, dec: number): number {
+    const factor = Math.pow(10, dec);
+    return Math.round(v * factor) / factor;
+}
+
+/**
+ * Resolves TP/SL prices whether user provided:
+ * 1. Absolute price (e.g. limit=52000, stop=48000)
+ * 2. Point / Dollar offset (e.g. profit=300, loss=120)
+ * 3. Percentage fallback from bot configuration (e.g. TP=1.5%, SL=0.8%)
+ */
+export function computeTPSL(
+    entryPrice: number,
+    side: OrderSide,
+    c: PineBotConfig,
+    signalTp?: number,
+    signalSl?: number
+): { tp: number; sl: number; tpLimit: number; slBuf: number } {
+    const tpPercent = c.TP_PERCENT / 100;
+    const slPercent = c.SL_PERCENT / 100;
+    const dec       = c.PRICE_DECIMAL_PLACES;
+
+    let tpTrigger: number;
+    let slTrigger: number;
+
+    // ── 1. Resolve Take Profit ────────────────────────────────────
+    if (signalTp && signalTp > 0) {
+        // If signalTp is near entry price (within 50% to 200%), treat as absolute price
+        if (signalTp > entryPrice * 0.3 && signalTp < entryPrice * 3.0) {
+            tpTrigger = signalTp;
+        } else {
+            // Treat as point / dollar distance offset from entry
+            tpTrigger = side === 'buy'
+                ? entryPrice + signalTp
+                : entryPrice - signalTp;
+        }
+    } else {
+        tpTrigger = side === 'buy'
+            ? entryPrice * (1 + tpPercent)
+            : entryPrice * (1 - tpPercent);
+    }
+
+    // ── 2. Resolve Stop Loss ──────────────────────────────────────
+    if (signalSl && signalSl > 0) {
+        // If signalSl is near entry price, treat as absolute price
+        if (signalSl > entryPrice * 0.3 && signalSl < entryPrice * 3.0) {
+            slTrigger = signalSl;
+        } else {
+            // Treat as point / dollar distance offset from entry
+            slTrigger = side === 'buy'
+                ? entryPrice - signalSl
+                : entryPrice + signalSl;
+        }
+    } else {
+        slTrigger = side === 'buy'
+            ? entryPrice * (1 - slPercent)
+            : entryPrice * (1 + slPercent);
+    }
+
+    // Safety clamp: Ensure TP is always above entry for BUY, below entry for SELL
+    if (side === 'buy' && tpTrigger <= entryPrice) {
+        tpTrigger = entryPrice * (1 + tpPercent);
+    } else if (side === 'sell' && tpTrigger >= entryPrice) {
+        tpTrigger = entryPrice * (1 - tpPercent);
+    }
+
+    // Safety clamp: Ensure SL is always below entry for BUY, above entry for SELL
+    if (side === 'buy' && slTrigger >= entryPrice) {
+        slTrigger = entryPrice * (1 - slPercent);
+    } else if (side === 'sell' && slTrigger <= entryPrice) {
+        slTrigger = entryPrice * (1 + slPercent);
+    }
+
+    tpTrigger = clampDecimals(tpTrigger, dec);
+    slTrigger = clampDecimals(slTrigger, dec);
+
+    // ── 3. Bracket Order Limit & Trigger Buffers ──────────────────
+    const tpBuf   = (c.TP_LIMIT_BUFFER_PERCENT / 100);
+    const tpLimit = side === 'buy'
+        ? clampDecimals(tpTrigger * (1 - tpBuf), dec)
+        : clampDecimals(tpTrigger * (1 + tpBuf), dec);
+
+    const slBuf  = (c.SL_TRIGGER_BUFFER_PERCENT / 100);
+    const slTriggerAdj = side === 'buy'
+        ? clampDecimals(slTrigger * (1 - slBuf), dec)
+        : clampDecimals(slTrigger * (1 + slBuf), dec);
+
+    return { tp: tpTrigger, sl: slTriggerAdj, tpLimit, slBuf };
+}
+
+export async function executeTrade(
+    client: DeltaClient,
+    c: PineBotConfig,
+    side: OrderSide,
+    state: any,
+    signalTp?: number,
+    signalSl?: number
+): Promise<void> {
+    const botId = c.id;
+
+    // ── Compute quantity in lots ──────────────────────────────────
+    const markPrice = await client.getMarkPrice(c.SYMBOL);
+    if (!markPrice) throw new Error('Cannot fetch mark price');
+
+    const tradeUSD   = Math.min(c.MIN_TRADE_SIZE, c.MAX_TRADE_SIZE);
+    const notional   = tradeUSD * c.LEVERAGE;
+    const qty        = Math.max(1, Math.floor(notional / (markPrice * c.LOT_SIZE)));
+    const maxQty     = Math.floor((c.MAX_TRADE_SIZE * c.LEVERAGE) / (markPrice * c.LOT_SIZE));
+
+    if (qty > maxQty) {
+        log(botId, `Qty ${qty} exceeds maxQty ${maxQty}. Capping.`);
+    }
+    const finalQty = Math.min(qty, maxQty);
+
+    if (finalQty <= 0) throw new Error('Calculated quantity is 0');
+
+    log(botId, `Placing ${side.toUpperCase()} entry — qty=${finalQty} lots, price≈${markPrice}`);
+
+    if (c.DRY_RUN) {
+        log(botId, '[DRY RUN] Skipping actual order placement');
+        return;
+    }
+
+    // ── Entry order ───────────────────────────────────────────────
+    const entryRes = await client.placeMarketOrder(c.PRODUCT_ID, c.SYMBOL, side, finalQty);
+    const entryId  = String(entryRes?.result?.id ?? '');
+    if (!entryId) throw new Error('Entry order did not return an ID');
+
+    const fillPrice = Number(entryRes?.result?.average_fill_price ?? markPrice);
+    log(botId, `Entry placed: id=${entryId} fillPrice=${fillPrice}`);
+
+    // ── Compute TP / SL ───────────────────────────────────────────
+    const { tp, sl, tpLimit } = computeTPSL(fillPrice, side, c, signalTp, signalSl);
+    log(botId, `TP trigger=${tp} TP limit=${tpLimit} SL trigger=${sl}`);
+
+    // ── Bracket order ─────────────────────────────────────────────
+    const bracket = await client.placeBracketOrder({
+        productId:    c.PRODUCT_ID,
+        symbol:       c.SYMBOL,
+        tpTrigger:    tp,
+        tpLimit:      tpLimit,
+        slTrigger:    sl,
+        positionSide: side,
+        decimals:     c.PRICE_DECIMAL_PLACES,
+    });
+
+    if (!bracket.success) throw new Error('Failed to place TP/SL bracket orders');
+    log(botId, `Bracket placed: TP_ID=${bracket.tpId} SL_ID=${bracket.slId}`);
+
+    // ── Save state ────────────────────────────────────────────────
+    await PineTradeState.findByIdAndUpdate(state._id, {
+        tradeOutcome:      'pending',
+        side,
+        entryOrderId:       entryId,
+        takeProfitOrderId:  bracket.tpId,
+        stopLossOrderId:    bracket.slId,
+        entryPrice:         fillPrice,
+        tpPrice:            tp,
+        slPrice:            sl,
+        quantity:           finalQty,
+        leverage:           c.LEVERAGE,
+        entryFilledAt:      new Date(),
+        lastTradeSettledAt: new Date(),
+    });
+
+    // Clear any lingering bot error
+    await PineBotError.findOneAndUpdate(
+        { botId },
+        { message: '', status: 'active', isActive: true, updatedAt: new Date() },
+        { upsert: true }
+    );
+
+    log(botId, `✓ TRADE COMPLETE — ${side.toUpperCase()} ${finalQty}L @${fillPrice} | TP=${tp} SL=${sl}`);
+}
