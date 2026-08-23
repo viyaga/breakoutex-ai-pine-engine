@@ -26,8 +26,11 @@ export interface PineBotConfig {
     SL_PERCENT: number;      // Stop loss % from entry (overridden by pine script if provided)
     LEVERAGE: number;
     CAPITAL_AMOUNT: number;
-    MIN_TRADE_SIZE: number;  // USD
-    MAX_TRADE_SIZE: number;  // USD
+    MIN_TRADE_SIZE: number;  // USD (auto-deduced if not set)
+    MAX_TRADE_SIZE: number;  // USD (auto-deduced if not set)
+    MODE: 'safe' | 'balanced' | 'aggressive';
+    MIN_RR: number;          // Minimum Risk-to-Reward ratio (e.g. 1.5, 2.0)
+    MIN_SCORE: number;       // Minimum confluence score (0-100) to execute trade
     DAILY_LOSS_LIMIT: number; // % of capital
     MAX_CONCURRENT_TRADES: number;
     IS_WEEKEND_SAFETY_ENABLED: boolean;
@@ -65,6 +68,7 @@ export interface PineSignal {
     action: 'buy' | 'sell' | 'close' | 'none';
     tp?: number;   // absolute price (optional — falls back to TP_PERCENT)
     sl?: number;   // absolute price (optional — falls back to SL_PERCENT)
+    score?: number; // confluence score (0-100)
     comment?: string;
 }
 
@@ -77,17 +81,21 @@ export interface RawActiveBot {
     SECRET_KEY: string;
     SYMBOL: string;
     PRODUCT_ID: string;
-    LEVERAGE: number;
-    MIN_TRADE_SIZE: number;
-    MAX_TRADE_SIZE: number;
-    DAILY_LOSS_LIMIT: number;
-    MAX_CONCURRENT_TRADES: number;
+    LEVERAGE?: number;
+    MIN_TRADE_SIZE?: number;
+    MAX_TRADE_SIZE?: number;
+    TRADING_MODE?: 'safe' | 'balanced' | 'aggressive';
+    MIN_RR?: number;
+    MIN_FINAL_SCORE?: number;
+    DAILY_LOSS_LIMIT?: number;
+    MAX_CONCURRENT_TRADES?: number;
     CAPITAL_AMOUNT: number;
     IS_WEEKEND_SAFETY_ENABLED?: boolean;
-    PINE_SCRIPT: string;
+    PINE_SCRIPT?: string;
     PINE_TIMEFRAME?: string;
     PINE_TP_PERCENT?: number;
     PINE_SL_PERCENT?: number;
+    BOT_TYPE?: 'ai' | 'pine';
     IS_AI_MANAGED?: boolean;
     CURRENT_STRATEGY_ID?: string;
     CURRENT_STRATEGY_NAME?: string;

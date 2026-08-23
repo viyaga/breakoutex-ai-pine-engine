@@ -1,4 +1,4 @@
-﻿// ================================================================
+// ================================================================
 // Trade Executor — places entry + TP/SL bracket orders
 // Smart resolution for absolute prices vs point offsets
 // ================================================================
@@ -82,6 +82,18 @@ export function computeTPSL(
         slTrigger = entryPrice * (1 + slPercent);
     }
 
+    // ── Enforce Minimum Risk-to-Reward Ratio (minRR) ───────────────
+    const minRR = Math.max(1.0, c.MIN_RR || 1.5);
+    const slDist = Math.abs(entryPrice - slTrigger);
+    const requiredTpDist = slDist * minRR;
+    const currentTpDist = Math.abs(tpTrigger - entryPrice);
+
+    if (currentTpDist < requiredTpDist) {
+        tpTrigger = side === 'buy'
+            ? entryPrice + requiredTpDist
+            : entryPrice - requiredTpDist;
+    }
+
     tpTrigger = clampDecimals(tpTrigger, dec);
     slTrigger = clampDecimals(slTrigger, dec);
 
@@ -109,14 +121,22 @@ export async function executeTrade(
 ): Promise<void> {
     const botId = c.id;
 
-    // ── Compute quantity in lots ──────────────────────────────────
+    // ── Compute quantity in lots according to MODE ────────────────
     const markPrice = await client.getMarkPrice(c.SYMBOL);
     if (!markPrice) throw new Error('Cannot fetch mark price');
 
-    const tradeUSD   = Math.min(c.MIN_TRADE_SIZE, c.MAX_TRADE_SIZE);
+    let tradeUSD: number;
+    if (c.MODE === 'safe') {
+        tradeUSD = Math.min(c.MIN_TRADE_SIZE, c.MAX_TRADE_SIZE);
+    } else if (c.MODE === 'aggressive') {
+        tradeUSD = Math.max(c.MIN_TRADE_SIZE, c.MAX_TRADE_SIZE);
+    } else { // balanced
+        tradeUSD = (c.MIN_TRADE_SIZE + c.MAX_TRADE_SIZE) / 2;
+    }
+
     const notional   = tradeUSD * c.LEVERAGE;
     const qty        = Math.max(1, Math.floor(notional / (markPrice * c.LOT_SIZE)));
-    const maxQty     = Math.floor((c.MAX_TRADE_SIZE * c.LEVERAGE) / (markPrice * c.LOT_SIZE));
+    const maxQty     = Math.max(1, Math.floor((Math.max(c.MIN_TRADE_SIZE, c.MAX_TRADE_SIZE) * c.LEVERAGE) / (markPrice * c.LOT_SIZE)));
 
     if (qty > maxQty) {
         log(botId, `Qty ${qty} exceeds maxQty ${maxQty}. Capping.`);

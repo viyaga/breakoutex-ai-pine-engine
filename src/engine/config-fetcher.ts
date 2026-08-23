@@ -45,11 +45,11 @@ export async function fetchActivePineBots(): Promise<PineBotConfig[]> {
     // Serve from cache if fresh
     if (configCache && Date.now() - configCache.ts < CONFIG_TTL) return configCache.data;
 
-    const url = `${env.payloadUrl}/api/trading-bots/active-subscribed/all?limit=200&offset=0&serverIp=${env.serverIp}&botType=pine`;
+    const url = `${env.payloadUrl}/api/trading-bots/active-subscribed/all?limit=200&offset=0&serverIp=${env.serverIp}`;
     const raw: RawActiveBot[] = await fetchJson(url) ?? [];
 
     if (!Array.isArray(raw) || !raw.length) {
-        console.log('[Config] No active Pine bots found');
+        console.log('[Config] No active bots found');
         return [];
     }
 
@@ -67,6 +67,13 @@ export async function fetchActivePineBots(): Promise<PineBotConfig[]> {
         const decimals  = product?.tick_size?.includes('.')
             ? product.tick_size.split('.')[1].length
             : 2;
+
+        const capital = Number(bot.CAPITAL_AMOUNT ?? 0);
+        // Auto-deduce sizing if omitted
+        const autoMin = capital > 0 ? Math.max(5, Math.round(capital * 0.05)) : 10;
+        const autoMax = capital > 0 ? Math.max(autoMin * 2, Math.round(capital * 0.20)) : 100;
+
+        const isAi = bot.BOT_TYPE === 'ai' || Boolean(bot.IS_AI_MANAGED);
 
         return {
             id:           String(bot.id),
@@ -86,10 +93,13 @@ export async function fetchActivePineBots(): Promise<PineBotConfig[]> {
             TP_PERCENT:   Number(bot.PINE_TP_PERCENT ?? 1.5),
             SL_PERCENT:   Number(bot.PINE_SL_PERCENT ?? 0.8),
             LEVERAGE:     Number(bot.LEVERAGE ?? 10),
-            CAPITAL_AMOUNT:       Number(bot.CAPITAL_AMOUNT ?? 0),
-            MIN_TRADE_SIZE:       Number(bot.MIN_TRADE_SIZE ?? 10),
-            MAX_TRADE_SIZE:       Number(bot.MAX_TRADE_SIZE ?? 100),
-            DAILY_LOSS_LIMIT:     Number(bot.DAILY_LOSS_LIMIT ?? 5),
+            CAPITAL_AMOUNT:       capital,
+            MIN_TRADE_SIZE:       Number(bot.MIN_TRADE_SIZE || autoMin),
+            MAX_TRADE_SIZE:       Number(bot.MAX_TRADE_SIZE || autoMax),
+            MODE:                 (bot.TRADING_MODE || 'balanced').toLowerCase() as 'safe' | 'balanced' | 'aggressive',
+            MIN_RR:               Number(bot.MIN_RR ?? 1.5),
+            MIN_SCORE:            Number(bot.MIN_FINAL_SCORE ?? 60),
+            DAILY_LOSS_LIMIT:     Number(bot.DAILY_LOSS_LIMIT ?? 10),
             MAX_CONCURRENT_TRADES: Number(bot.MAX_CONCURRENT_TRADES ?? 1),
             IS_WEEKEND_SAFETY_ENABLED: bot.IS_WEEKEND_SAFETY_ENABLED !== false,
 
@@ -100,7 +110,7 @@ export async function fetchActivePineBots(): Promise<PineBotConfig[]> {
             ESTIMATED_FEE_PERCENT:     0.05,
             DRY_RUN:                   env.dryRun,
 
-            IS_AI_MANAGED:             Boolean(bot.IS_AI_MANAGED),
+            IS_AI_MANAGED:             isAi,
             CURRENT_STRATEGY_ID:       bot.CURRENT_STRATEGY_ID,
             CURRENT_STRATEGY_NAME:     bot.CURRENT_STRATEGY_NAME,
             MARKET_CONDITION:          bot.MARKET_CONDITION,

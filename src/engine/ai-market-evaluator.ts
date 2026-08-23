@@ -91,7 +91,7 @@ export function isAiEvaluationDue(bot: PineBotConfig): boolean {
             if (!cached) {
                 evaluationCache.set(bot.id, {
                     lastEvaluationTs: lastEvalTs,
-                    strategyId: bot.CURRENT_STRATEGY_ID || 'supertrend_pullback',
+                    strategyId: bot.CURRENT_STRATEGY_ID || 'mtf_bullish_trend_pullback',
                 });
             }
             return false;
@@ -124,6 +124,9 @@ export async function evaluateAndApplyAiStrategy(
             body: JSON.stringify({
                 symbol,
                 exchange: bot.EXCHANGE,
+                tradingMode: bot.MODE,
+                minRR: bot.MIN_RR,
+                minScore: bot.MIN_SCORE,
                 ...marketSnapshot,
                 availableStrategies: catalog,
             }),
@@ -145,21 +148,21 @@ export async function evaluateAndApplyAiStrategy(
         const isBull = marketSnapshot.change24h > 1 || (marketSnapshot.rsi > 55 && marketSnapshot.emaTrend === 'bullish');
         const isBear = marketSnapshot.change24h < -1 || (marketSnapshot.rsi < 45 && marketSnapshot.emaTrend === 'bearish');
 
-        let fallbackId = 'bollinger_mean_reversion';
+        let fallbackId = 'mtf_bollinger_mean_reversion';
         let fallbackCond: AiMarketEvaluationResponse['marketCondition'] = 'ranging_choppy';
 
         if (marketSnapshot.volatilityLevel === 'high') {
-            fallbackId = 'breakout_squeeze';
+            fallbackId = 'mtf_volatility_squeeze_breakout';
             fallbackCond = 'high_volatility_breakout';
         } else if (isBull) {
-            fallbackId = 'supertrend_pullback';
+            fallbackId = 'mtf_bullish_trend_pullback';
             fallbackCond = 'trending_bullish';
         } else if (isBear) {
-            fallbackId = 'bearish_ema_breakdown';
+            fallbackId = 'mtf_bearish_breakdown';
             fallbackCond = 'trending_bearish';
         }
 
-        const strat = getStrategyById(fallbackId) || STRATEGY_LIBRARY.supertrend_pullback;
+        const strat = getStrategyById(fallbackId) || STRATEGY_LIBRARY.mtf_bullish_trend_pullback;
         aiResult = {
             marketCondition: fallbackCond,
             confidence: 'medium',
@@ -173,7 +176,7 @@ export async function evaluateAndApplyAiStrategy(
     }
 
     // Apply selected strategy from library
-    const selectedStrat = getStrategyById(aiResult.selectedStrategyId) || STRATEGY_LIBRARY.supertrend_pullback;
+    const selectedStrat = getStrategyById(aiResult.selectedStrategyId) || STRATEGY_LIBRARY.mtf_bullish_trend_pullback;
 
     const now = new Date();
     const nextEval = new Date(now.getTime() + SIX_HOURS_MS);

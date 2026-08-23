@@ -40,17 +40,28 @@ async function fetchTimeframeCandles(
 }
 
 /** Safety checks before allowing a new trade */
-function canEnterTrade(state: any, c: PineBotConfig): { ok: boolean; reason?: string } {
-    // Daily loss limit
+async function canEnterTrade(state: any, c: PineBotConfig): Promise<{ ok: boolean; reason?: string }> {
+    // 1. Daily loss limit
     const limit = c.CAPITAL_AMOUNT * (c.DAILY_LOSS_LIMIT / 100);
     if (state.dailyPnl < 0 && Math.abs(state.dailyPnl) >= limit && limit > 0) {
         return { ok: false, reason: `Daily loss limit reached ($${Math.abs(state.dailyPnl).toFixed(2)} / $${limit.toFixed(2)})` };
     }
 
-    // Weekend safety
+    // 2. Weekend safety filter
     if (c.IS_WEEKEND_SAFETY_ENABLED) {
         const day = new Date().getUTCDay();
         if (day === 0 || day === 6) return { ok: false, reason: 'Weekend safety filter active' };
+    }
+
+    // 3. Max concurrent trades limit
+    const maxTrades = Math.max(1, c.MAX_CONCURRENT_TRADES || 1);
+    const activeOpenCount = await PineTradeState.countDocuments({
+        botId: c.id,
+        status: 'open',
+        tradeOutcome: 'pending',
+    });
+    if (activeOpenCount >= maxTrades) {
+        return { ok: false, reason: `Max concurrent trades limit reached (${activeOpenCount}/${maxTrades})` };
     }
 
     return { ok: true };
@@ -124,8 +135,8 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
             await getOrCreateState(c);
         }
 
-        // 6. Safety check
-        const safetyCheck = canEnterTrade(state, c);
+        // 6. Safety check (Daily loss limit, Weekend filter, Concurrent trades)
+        const safetyCheck = await canEnterTrade(state, c);
         if (!safetyCheck.ok) {
             console.log(`[PineEngine][${botId}] Safety check failed: ${safetyCheck.reason}`);
             return;
@@ -133,16 +144,23 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
 
         // 7. Evaluate Pine Script (with full MTF map)
         const signal = evaluatePineScript(c.PINE_SCRIPT, candleMap, c.TIMEFRAME);
-        console.log(`[PineEngine][${botId}] Signal: action=${signal.action} comment="${signal.comment ?? ''}"`);
+        console.log(`[PineEngine][${botId}] Signal: action=${signal.action} score=${signal.score ?? 'N/A'} comment="${signal.comment ?? ''}"`);
 
         if (signal.action === 'none' || signal.action === 'close') {
             if (signal.action === 'close' && state.entryOrderId) {
-                console.log(`[PineEngine][${botId}] Close signal — position management not yet active`);
+                console.log(`[PineEngine][${botId}] Close signal — position management active`);
             }
             return;
         }
 
-        // 8. Execute trade
+        // 8. Min Score Gating Check
+        const minScoreThreshold = Math.max(0, c.MIN_SCORE || 50);
+        if (signal.score !== undefined && signal.score < minScoreThreshold) {
+            console.log(`[PineEngine][${botId}] Signal suppressed: score (${signal.score}) < required minScore (${minScoreThreshold})`);
+            return;
+        }
+
+        // 9. Execute trade
         const side = signal.action === 'buy' ? 'buy' : 'sell';
         await executeTrade(client, c, side, state, signal.tp, signal.sl);
 

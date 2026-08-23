@@ -1,6 +1,6 @@
 // ================================================================
-// Strategy Library — Curated Pine Script Strategies for AI Management
-// Each strategy is optimized for specific market regimes.
+// Strategy Library — Curated Multi-Timeframe Pine Script Strategies
+// Optimized for specific market regimes and automated AI management.
 // ================================================================
 
 export interface PineStrategyDefinition {
@@ -21,50 +21,83 @@ export interface PineStrategyDefinition {
 }
 
 export const STRATEGY_LIBRARY: Record<string, PineStrategyDefinition> = {
-    supertrend_pullback: {
-        id: 'supertrend_pullback',
-        name: 'Supertrend Momentum Pullback',
-        description: 'Trend-following strategy that uses Supertrend (10, 3) and EMA 21/50 alignment to catch pullback entries during strong bull/bear trends.',
-        bestMarketConditions: ['trending_bullish', 'trending_bearish'],
+    mtf_bullish_trend_pullback: {
+        id: 'mtf_bullish_trend_pullback',
+        name: 'MTF Bullish Trend & EMA Pullback',
+        description: 'Multi-timeframe trend system. Anchored to 1h macro EMA 200 filter, triggers long entries on 5m EMA 9/21 pullback crosses with RSI momentum confirmation.',
+        bestMarketConditions: ['trending_bullish'],
         recommendedTimeframe: '5m',
-        defaultTpPercent: 2.2,
+        defaultTpPercent: 2.4,
         defaultSlPercent: 1.0,
         pineScript: `//@version=5
-strategy("Supertrend Momentum Pullback", overlay=true)
+strategy("MTF Bullish Trend & EMA Pullback", overlay=true)
 
-stPeriod = input.int(10, "Supertrend Period")
-stMultiplier = input.float(3.0, "Supertrend Multiplier")
-fastEmaLen = input.int(21, "Fast EMA")
-slowEmaLen = input.int(50, "Slow EMA")
+// Higher Timeframe Filter (1 Hour)
+htfEma200 = request.security(syminfo.tickerid, "1h", ta.ema(close, 200))
+htfBullish = close > htfEma200
 
-[stVal, stDir] = ta.supertrend(stMultiplier, stPeriod)
-fastEma = ta.ema(close, fastEmaLen)
-slowEma = ta.ema(close, slowEmaLen)
+// Active 5m Indicators
+fastEma = ta.ema(close, 9)
+slowEma = ta.ema(close, 21)
+trendEma = ta.ema(close, 50)
+rsiVal = ta.rsi(close, 14)
 
-isBullTrend = stDir == 1 and fastEma > slowEma
-isBearTrend = stDir == -1 and fastEma < slowEma
-
-longCondition = isBullTrend and ta.crossover(close, fastEma)
-shortCondition = isBearTrend and ta.crossunder(close, fastEma)
+// Entry Conditions
+longCondition = htfBullish and ta.crossover(fastEma, slowEma) and close > trendEma and rsiVal > 50
+longExit = ta.crossunder(fastEma, slowEma) or rsiVal > 75
 
 if longCondition
     strategy.entry("Long", strategy.long)
 
-if shortCondition
-    strategy.entry("Short", strategy.short)
+if longExit
+    strategy.close("Long")
 `,
     },
 
-    bollinger_mean_reversion: {
-        id: 'bollinger_mean_reversion',
-        name: 'Bollinger Bands Mean Reversion',
-        description: 'Mean-reversion strategy designed for sideways, choppy, and consolidation markets using Bollinger Bands (20, 2) and RSI (14) oversold/overbought extremes.',
+    mtf_bearish_breakdown: {
+        id: 'mtf_bearish_breakdown',
+        name: 'MTF Bearish Trend & Momentum Breakdown',
+        description: 'Multi-timeframe shorting system. Confirmed by 1h macro downtrend structure, enters short on 5m Triple EMA (9/21/55) breakdown with RSI < 45.',
+        bestMarketConditions: ['trending_bearish'],
+        recommendedTimeframe: '5m',
+        defaultTpPercent: 2.5,
+        defaultSlPercent: 1.1,
+        pineScript: `//@version=5
+strategy("MTF Bearish Trend & Momentum Breakdown", overlay=true)
+
+// Higher Timeframe Filter (1 Hour)
+htfEma200 = request.security(syminfo.tickerid, "1h", ta.ema(close, 200))
+htfBearish = close < htfEma200
+
+// Active 5m Indicators
+ema9 = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+ema55 = ta.ema(close, 55)
+rsiVal = ta.rsi(close, 14)
+
+// Entry Conditions
+bearStructure = ema9 < ema21 and ema21 < ema55
+shortCondition = htfBearish and ta.crossunder(ema9, ema21) and close < ema55 and rsiVal < 45
+shortExit = ta.crossover(ema9, ema21) or rsiVal < 25
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
+
+if shortExit
+    strategy.close("Short")
+`,
+    },
+
+    mtf_bollinger_mean_reversion: {
+        id: 'mtf_bollinger_mean_reversion',
+        name: 'MTF Bollinger Mean Reversion',
+        description: 'Mean-reversion strategy for ranging and choppy markets. Buys lower band bounces when RSI < 35 and sells upper band rejections when RSI > 65.',
         bestMarketConditions: ['ranging_choppy', 'low_volatility_consolidation'],
         recommendedTimeframe: '5m',
-        defaultTpPercent: 1.5,
+        defaultTpPercent: 1.6,
         defaultSlPercent: 0.8,
         pineScript: `//@version=5
-strategy("Bollinger Mean Reversion", overlay=true)
+strategy("MTF Bollinger Mean Reversion", overlay=true)
 
 bbLength = input.int(20, "BB Length")
 bbMult = input.float(2.0, "BB Multiplier")
@@ -73,8 +106,11 @@ rsiLength = input.int(14, "RSI Length")
 [basis, upper, lower] = ta.bb(close, bbLength, bbMult)
 rsiVal = ta.rsi(close, rsiLength)
 
-longCondition = ta.crossover(close, lower) and rsiVal < 40
-shortCondition = ta.crossunder(close, upper) and rsiVal > 60
+// 15m HTF RSI for multi-timeframe divergence
+htfRsi = request.security(syminfo.tickerid, "15m", ta.rsi(close, 14))
+
+longCondition = ta.crossover(close, lower) and rsiVal < 38 and htfRsi < 45
+shortCondition = ta.crossunder(close, upper) and rsiVal > 62 and htfRsi > 55
 
 if longCondition
     strategy.entry("Long", strategy.long)
@@ -84,28 +120,25 @@ if shortCondition
 `,
     },
 
-    breakout_squeeze: {
-        id: 'breakout_squeeze',
-        name: 'Volatility Squeeze Breakout',
-        description: 'Explosive breakout strategy that detects Bollinger Band contraction inside Keltner Channels (TTM Squeeze) and enters on momentum release.',
+    mtf_volatility_squeeze_breakout: {
+        id: 'mtf_volatility_squeeze_breakout',
+        name: 'MTF Volatility Squeeze Breakout',
+        description: 'Detects 15m Bollinger Band contraction inside Keltner Channels (TTM Squeeze) and enters on 5m explosive momentum expansion.',
         bestMarketConditions: ['high_volatility_breakout', 'low_volatility_consolidation'],
-        recommendedTimeframe: '15m',
-        defaultTpPercent: 2.8,
+        recommendedTimeframe: '5m',
+        defaultTpPercent: 3.0,
         defaultSlPercent: 1.2,
         pineScript: `//@version=5
-strategy("Volatility Squeeze Breakout", overlay=true)
+strategy("MTF Volatility Squeeze Breakout", overlay=true)
 
-bbLength = input.int(20, "BB Length")
-bbMult = input.float(1.5, "BB Multiplier")
-kcLength = input.int(20, "KC Length")
-kcMult = input.float(1.5, "KC Multiplier")
+// 15m Squeeze Detection
+[htfBbBasis, htfBbUpper, htfBbLower] = request.security(syminfo.tickerid, "15m", ta.bb(close, 20, 1.5))
+[htfKcBasis, htfKcUpper, htfKcLower] = request.security(syminfo.tickerid, "15m", ta.kc(close, 20, 1.5))
 
-[bbBasis, bbUpper, bbLower] = ta.bb(close, bbLength, bbMult)
-[kcBasis, kcUpper, kcLower] = ta.kc(close, kcLength, kcMult)
-
-squeezeOn = (bbLower > kcLower) and (bbUpper < kcUpper)
+squeezeOn = (htfBbLower > htfKcLower) and (htfBbUpper < htfKcUpper)
 squeezeOff = not squeezeOn
 
+// 5m Momentum & Entry
 mom = ta.mom(close, 12)
 emaFast = ta.ema(close, 9)
 emaSlow = ta.ema(close, 21)
@@ -121,56 +154,63 @@ if shortCondition
 `,
     },
 
-    bearish_ema_breakdown: {
-        id: 'bearish_ema_breakdown',
-        name: 'Bearish Trend Breakdown',
-        description: 'High-probability shorting strategy for sustained bear markets using triple EMA alignment (9/21/55) and RSI momentum breakdown.',
-        bestMarketConditions: ['trending_bearish'],
+    mtf_donchian_breakout_scalper: {
+        id: 'mtf_donchian_breakout_scalper',
+        name: 'MTF Donchian High-Momentum Breakout',
+        description: 'Exploits high-volatility breakouts above/below 20-period Donchian Channels with 1h trend filter and volume confirmation.',
+        bestMarketConditions: ['high_volatility_breakout', 'trending_bullish'],
         recommendedTimeframe: '5m',
-        defaultTpPercent: 2.4,
+        defaultTpPercent: 2.6,
         defaultSlPercent: 1.1,
         pineScript: `//@version=5
-strategy("Bearish Trend Breakdown", overlay=true)
+strategy("MTF Donchian High-Momentum Breakout", overlay=true)
 
-ema9 = ta.ema(close, 9)
-ema21 = ta.ema(close, 21)
-ema55 = ta.ema(close, 55)
-rsiVal = ta.rsi(close, 14)
+// 1h Macro Trend Filter
+htfEma50 = request.security(syminfo.tickerid, "1h", ta.ema(close, 50))
 
-isBearStructure = ema9 < ema21 and ema21 < ema55
-shortTrigger = ta.crossunder(ema9, ema21) and close < ema55 and rsiVal < 45
-longCover = ta.crossover(ema9, ema21) and close > ema55
+// 5m Donchian Channel
+dUpper = ta.highest(high, 20)
+dLower = ta.lowest(low, 20)
+fastEma = ta.ema(close, 9)
 
-if shortTrigger
-    strategy.entry("Short", strategy.short)
+longCondition = close > htfEma50 and ta.crossover(close, dUpper[1])
+shortCondition = close < htfEma50 and ta.crossunder(close, dLower[1])
 
-if longCover
+if longCondition
     strategy.entry("Long", strategy.long)
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
 `,
     },
 
-    mtf_ema_scalper: {
-        id: 'mtf_ema_scalper',
-        name: 'Multi-Timeframe Scalper',
-        description: 'Fast 9/21 EMA dynamic crossover scalper with ATR trailing stop loss designed for rapid intraday momentum.',
-        bestMarketConditions: ['trending_bullish', 'trending_bearish', 'ranging_choppy'],
+    mtf_macd_stoch_reversal: {
+        id: 'mtf_macd_stoch_reversal',
+        name: 'MTF MACD & Stochastic Exhaustion Reversal',
+        description: 'Captures turning points in oscillating and choppy regimes using Stochastic RSI extreme zones and MACD histogram crossovers.',
+        bestMarketConditions: ['ranging_choppy', 'trending_bullish', 'trending_bearish'],
         recommendedTimeframe: '5m',
-        defaultTpPercent: 1.6,
-        defaultSlPercent: 0.8,
+        defaultTpPercent: 1.8,
+        defaultSlPercent: 0.9,
         pineScript: `//@version=5
-strategy("Multi-Timeframe Scalper", overlay=true)
+strategy("MTF MACD & Stochastic Exhaustion Reversal", overlay=true)
 
-fastEma = ta.ema(close, 9)
-slowEma = ta.ema(close, 21)
-filterEma = ta.ema(close, 100)
+// 5m Stochastic RSI
+[stochK, stochD] = ta.stoch(close, high, low, 14)
 
-longSignal = ta.crossover(fastEma, slowEma) and close > filterEma
-shortSignal = ta.crossunder(fastEma, slowEma) and close < filterEma
+// 5m MACD
+[macdLine, signalLine, hist] = ta.macd(close, 12, 26, 9)
 
-if longSignal
+// 15m MACD Trend Filter
+[htfMacd, htfSignal, htfHist] = request.security(syminfo.tickerid, "15m", ta.macd(close, 12, 26, 9))
+
+longCondition = ta.crossover(stochK, 20) and ta.crossover(macdLine, signalLine) and htfHist > -1
+shortCondition = ta.crossunder(stochK, 80) and ta.crossunder(macdLine, signalLine) and htfHist < 1
+
+if longCondition
     strategy.entry("Long", strategy.long)
 
-if shortSignal
+if shortCondition
     strategy.entry("Short", strategy.short)
 `,
     },

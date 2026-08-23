@@ -1,4 +1,4 @@
-﻿// ================================================================
+// ================================================================
 // Pine Script Interpreter  (v3 — with MTF & Series Primitives)
 // Evaluates a Pine Script v5 strategy, returns buy/sell/close signal.
 // Zero external runtime dependencies.
@@ -332,6 +332,46 @@ export function evaluatePineScript(
         );
     } catch (err: any) {
         console.error('[PineInterpreter] Error:', err.message?.slice(0, 200));
+    }
+
+    // ── Confluence Score Calculation ──────────────────────────────
+    if (ctx.signal.action === 'buy' || ctx.signal.action === 'sell') {
+        if (!ctx.signal.score) {
+            let score = 50; // Base score for valid signal trigger
+
+            const rsiArr = ind.rsi(close, 14);
+            const currentRsi = rsiArr[last] || 50;
+
+            const ema20Arr = ind.ema(close, Math.min(20, Math.floor(n / 2)));
+            const ema50Arr = ind.ema(close, Math.min(50, Math.floor(n / 2)));
+            const currentEma20 = ema20Arr[last] || close[last];
+            const currentEma50 = ema50Arr[last] || close[last];
+            const currentPrice = close[last];
+
+            // 1. RSI Confluence (+15)
+            if (ctx.signal.action === 'buy' && currentRsi >= 45 && currentRsi <= 70) {
+                score += 15;
+            } else if (ctx.signal.action === 'sell' && currentRsi <= 55 && currentRsi >= 30) {
+                score += 15;
+            }
+
+            // 2. Trend Confluence (+20)
+            if (ctx.signal.action === 'buy' && currentPrice > currentEma20 && currentEma20 >= currentEma50) {
+                score += 20;
+            } else if (ctx.signal.action === 'sell' && currentPrice < currentEma20 && currentEma20 <= currentEma50) {
+                score += 20;
+            }
+
+            // 3. Volume Confluence (+15)
+            const volSma = ind.sma(volume, Math.min(20, n));
+            const currentVol = volume[last];
+            const avgVol = volSma[last] || currentVol;
+            if (currentVol > avgVol * 1.1) {
+                score += 15;
+            }
+
+            ctx.signal.score = Math.min(100, Math.max(0, score));
+        }
     }
 
     return ctx.signal;
