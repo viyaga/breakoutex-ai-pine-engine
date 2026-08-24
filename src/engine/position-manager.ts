@@ -1,9 +1,9 @@
-﻿// ================================================================
+// ================================================================
 // Position Manager — handles open trade lifecycle
 // Checks if entry filled, TP hit, SL hit, updates state accordingly
 // ================================================================
 
-import { DeltaClient } from '../exchange/delta.client';
+import { IExchangeClient } from '../exchange/exchange.interface';
 import { PineTradeState, IPineTradeState, PineBotError } from '../models/tradeState.model';
 import { PineBotConfig } from '../config/types';
 
@@ -12,9 +12,10 @@ function log(botId: string, msg: string) {
 }
 
 /** Sync leverage on the exchange, silently handles errors */
-export async function syncLeverage(client: DeltaClient, c: PineBotConfig): Promise<void> {
+export async function syncLeverage(client: IExchangeClient, c: PineBotConfig): Promise<void> {
     try {
-        await client.setLeverage(c.PRODUCT_ID, c.LEVERAGE);
+        const prodIdentifier = c.PRODUCT_ID || c.SYMBOL;
+        await client.setLeverage(prodIdentifier, c.LEVERAGE, c.SYMBOL);
     } catch (err: any) {
         console.warn(`[PineEngine][${c.id}] Leverage sync failed (non-fatal): ${err.message}`);
     }
@@ -25,7 +26,7 @@ export async function syncLeverage(client: DeltaClient, c: PineBotConfig): Promi
  * Returns updated state. Marks state closed if trade resolved.
  */
 export async function handleOpenTrade(
-    client: DeltaClient,
+    client: IExchangeClient,
     state: IPineTradeState,
     c: PineBotConfig
 ): Promise<{ state: IPineTradeState; isStillOpen: boolean }> {
@@ -34,7 +35,7 @@ export async function handleOpenTrade(
     if (!state.entryOrderId) return { state, isStillOpen: false };
 
     // 1. Get entry order status
-    const entryOrder = await client.getOrder(state.entryOrderId);
+    const entryOrder = await client.getOrder(state.entryOrderId, c.SYMBOL);
     if (!entryOrder) {
         log(botId, `Could not fetch entry order ${state.entryOrderId}`);
         return { state, isStillOpen: true };
@@ -60,7 +61,8 @@ export async function handleOpenTrade(
     }
 
     // Entry is CLOSED = filled. Now check if TP or SL was hit
-    const pos = await client.getPosition(c.PRODUCT_ID);
+    const prodIdentifier = c.PRODUCT_ID || c.SYMBOL;
+    const pos = await client.getPosition(prodIdentifier, c.SYMBOL);
     const posSize = Number(pos?.size ?? 0);
 
     if (posSize !== 0) {
@@ -77,7 +79,7 @@ export async function handleOpenTrade(
 
     // Check TP order if available
     if (state.takeProfitOrderId) {
-        const tpOrder = await client.getOrder(state.takeProfitOrderId).catch(() => null);
+        const tpOrder = await client.getOrder(state.takeProfitOrderId, c.SYMBOL).catch(() => null);
         const tpStatus = (tpOrder?.state ?? tpOrder?.status ?? '').toUpperCase();
         if (tpStatus === 'CLOSED') {
             exitPrice = Number(tpOrder.average_fill_price ?? state.tpPrice ?? 0);
@@ -87,7 +89,7 @@ export async function handleOpenTrade(
 
     // Check SL order
     if (state.stopLossOrderId) {
-        const slOrder = await client.getOrder(state.stopLossOrderId).catch(() => null);
+        const slOrder = await client.getOrder(state.stopLossOrderId, c.SYMBOL).catch(() => null);
         const slStatus = (slOrder?.state ?? slOrder?.status ?? '').toUpperCase();
         if (slStatus === 'CLOSED') {
             exitPrice = Number(slOrder.average_fill_price ?? state.slPrice ?? 0);
@@ -95,10 +97,12 @@ export async function handleOpenTrade(
         }
     }
 
+
     // Compute PnL
     const qty  = Number(state.quantity ?? 0);
-    const lot  = c.LOT_SIZE;
+    const lot  = c.LOT_SIZE || 1;
     const side = state.side ?? 'buy';
+
     const rawPnl = side === 'buy'
         ? (exitPrice - entryPrice) * qty * lot
         : (entryPrice - exitPrice) * qty * lot;

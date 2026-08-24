@@ -3,7 +3,8 @@
 // Supports single and Multi-Timeframe (MTF) strategies
 // ================================================================
 
-import { DeltaClient, resolutionMs } from '../exchange/delta.client';
+import { IExchangeClient, resolutionMs } from '../exchange/exchange.interface';
+import { createExchangeClient } from '../exchange/exchange.factory';
 import { evaluatePineScript, extractRequestedTimeframes, normalizeTimeframe } from '../pine/interpreter';
 import { PineTradeState } from '../models/tradeState.model';
 import { PineBotConfig } from '../config/types';
@@ -17,7 +18,7 @@ const cycleCache = new Map<string, Candle[]>();
 export function clearCycleCache() { cycleCache.clear(); }
 
 async function fetchTimeframeCandles(
-    client: DeltaClient,
+    client: IExchangeClient,
     symbol: string,
     timeframe: string
 ): Promise<Candle[] | null> {
@@ -70,12 +71,13 @@ async function canEnterTrade(state: any, c: PineBotConfig): Promise<{ ok: boolea
 export async function runPineCycle(c: PineBotConfig): Promise<void> {
     const botId = c.id;
 
-    if (!c.PRODUCT_ID) {
-        console.warn(`[PineEngine][${botId}] No PRODUCT_ID — skipping`);
+    if (!c.SYMBOL) {
+        console.warn(`[PineEngine][${botId}] No SYMBOL — skipping`);
         return;
     }
 
-    const client = new DeltaClient(c.API_KEY, c.SECRET_KEY, c.BASE_URL);
+    const client = createExchangeClient(c);
+
 
     // AI Managed Bot: evaluate market regime directly via Gemini and assign strategy
     if (c.IS_AI_MANAGED && (!c.PINE_SCRIPT?.trim() || isAiEvaluationDue(c))) {

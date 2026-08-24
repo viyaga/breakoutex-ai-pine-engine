@@ -3,7 +3,7 @@
 // Smart resolution for absolute prices vs point offsets
 // ================================================================
 
-import { DeltaClient, resolutionMs } from '../exchange/delta.client';
+import { IExchangeClient } from '../exchange/exchange.interface';
 import { PineTradeState, PineBotError } from '../models/tradeState.model';
 import { PineBotConfig, OrderSide } from '../config/types';
 
@@ -112,7 +112,7 @@ export function computeTPSL(
 }
 
 export async function executeTrade(
-    client: DeltaClient,
+    client: IExchangeClient,
     c: PineBotConfig,
     side: OrderSide,
     state: any,
@@ -135,8 +135,8 @@ export async function executeTrade(
     }
 
     const notional   = tradeUSD * c.LEVERAGE;
-    const qty        = Math.max(1, Math.floor(notional / (markPrice * c.LOT_SIZE)));
-    const maxQty     = Math.max(1, Math.floor((Math.max(c.MIN_TRADE_SIZE, c.MAX_TRADE_SIZE) * c.LEVERAGE) / (markPrice * c.LOT_SIZE)));
+    const qty        = Math.max(1, Math.floor(notional / (markPrice * (c.LOT_SIZE || 1))));
+    const maxQty     = Math.max(1, Math.floor((Math.max(c.MIN_TRADE_SIZE, c.MAX_TRADE_SIZE) * c.LEVERAGE) / (markPrice * (c.LOT_SIZE || 1))));
 
     if (qty > maxQty) {
         log(botId, `Qty ${qty} exceeds maxQty ${maxQty}. Capping.`);
@@ -153,8 +153,9 @@ export async function executeTrade(
     }
 
     // ── Entry order ───────────────────────────────────────────────
-    const entryRes = await client.placeMarketOrder(c.PRODUCT_ID, c.SYMBOL, side, finalQty);
-    const entryId  = String(entryRes?.result?.id ?? '');
+    const prodIdentifier = c.PRODUCT_ID || c.SYMBOL;
+    const entryRes = await client.placeMarketOrder(prodIdentifier, c.SYMBOL, side, finalQty);
+    const entryId  = String(entryRes?.result?.id || entryRes?.result?.order_id || '');
     if (!entryId) throw new Error('Entry order did not return an ID');
 
     const fillPrice = Number(entryRes?.result?.average_fill_price ?? markPrice);
@@ -166,7 +167,7 @@ export async function executeTrade(
 
     // ── Bracket order ─────────────────────────────────────────────
     const bracket = await client.placeBracketOrder({
-        productId:    c.PRODUCT_ID,
+        productId:    prodIdentifier,
         symbol:       c.SYMBOL,
         tpTrigger:    tp,
         tpLimit:      tpLimit,
@@ -177,6 +178,7 @@ export async function executeTrade(
 
     if (!bracket.success) throw new Error('Failed to place TP/SL bracket orders');
     log(botId, `Bracket placed: TP_ID=${bracket.tpId} SL_ID=${bracket.slId}`);
+
 
     // ── Save state ────────────────────────────────────────────────
     await PineTradeState.findByIdAndUpdate(state._id, {

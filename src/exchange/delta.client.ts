@@ -1,11 +1,9 @@
-﻿// ================================================================
-// Delta Exchange HTTP Client
-// Pure fetch-based, HMAC-signed, with retry & time-offset correction
-// ================================================================
-
 import crypto from 'crypto';
 import env from '../config/env';
 import { Candle, OrderSide } from '../config/types';
+import { IExchangeClient, BracketOrderParams, BracketOrderResult, resolutionMs } from './exchange.interface';
+
+export { resolutionMs };
 
 function parseJson(t: string): any { try { return JSON.parse(t); } catch { return t; } }
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
@@ -35,7 +33,7 @@ function parseDeltaCandles(raw: any): Candle[] {
     })).sort((a, b) => a.timestamp - b.timestamp);
 }
 
-export class DeltaClient {
+export class DeltaClient implements IExchangeClient {
     private timeOffset = 0;
 
     constructor(
@@ -43,6 +41,7 @@ export class DeltaClient {
         private readonly secretKey: string,
         private readonly baseUrl: string = 'https://api.india.delta.exchange/v2',
     ) {}
+
 
     private sign(method: string, path: string, ts: number, body = ''): string {
         return crypto.createHmac('sha256', this.secretKey)
@@ -229,11 +228,3 @@ export class DeltaClient {
     }
 }
 
-// ── Resolution to milliseconds ────────────────────────────────────
-export function resolutionMs(r: string): number {
-    const val = parseInt(r.replace(/[^0-9]/g, ''));
-    if (r.includes('D') || r.includes('d')) return val * 86_400_000;
-    if (r.includes('H') || r.includes('h')) return val * 3_600_000;
-    if (r.includes('W') || r.includes('w')) return val * 604_800_000;
-    return val * 60_000; // minutes (5, 15, 1, etc.)
-}
