@@ -1,4 +1,4 @@
-﻿import fs from 'fs';
+import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
 
@@ -23,6 +23,9 @@ const env = {
     encryptionKey:   process.env.EXCHANGE_KEYS_ENCRYPTION_KEY!,
     concurrency:     parseInt(process.env.CONCURRENCY || '3', 10),
     dryRun:          process.env.DRY_RUN === 'true',
+    geminiApiKey:    process.env.GEMINI_API_KEY || '',
+    geminiModel:     process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
 };
 
 export default env;
+

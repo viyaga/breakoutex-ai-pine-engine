@@ -77,17 +77,21 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
 
     const client = new DeltaClient(c.API_KEY, c.SECRET_KEY, c.BASE_URL);
 
-    // AI Managed Bot: evaluate market regime and select strategy from library every 6 hours
+    // AI Managed Bot: evaluate market regime directly via Gemini and assign strategy
     if (c.IS_AI_MANAGED && (!c.PINE_SCRIPT?.trim() || isAiEvaluationDue(c))) {
         try {
-            const baseTfCandles = await fetchTimeframeCandles(client, c.SYMBOL, c.TIMEFRAME || '5m');
+            const [baseTfCandles, htfCandles] = await Promise.all([
+                fetchTimeframeCandles(client, c.SYMBOL, c.TIMEFRAME || '5m'),
+                fetchTimeframeCandles(client, c.SYMBOL, '1h'),
+            ]);
             if (baseTfCandles && baseTfCandles.length) {
-                await evaluateAndApplyAiStrategy(c, baseTfCandles);
+                await evaluateAndApplyAiStrategy(c, baseTfCandles, htfCandles ?? undefined);
             }
         } catch (evalErr: any) {
             console.error(`[PineEngine][${botId}] AI Market Evaluation failed:`, evalErr?.message ?? evalErr);
         }
     }
+
 
     if (!c.PINE_SCRIPT?.trim()) {
         console.warn(`[PineEngine][${botId}] No Pine Script — skipping`);
