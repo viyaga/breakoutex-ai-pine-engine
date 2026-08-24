@@ -159,8 +159,9 @@ async function runParityTestSuite() {
 
     // ── TEST 3: Multi-Timeframe (MTF) Lookahead Prevention ────────
     console.log('\n3. Testing Multi-Timeframe Alignment (No Lookahead Leak)...');
-    const strat = STRATEGY_LIBRARY.mtf_bullish_trend_pullback;
+    const strat = STRATEGY_LIBRARY.mtf_ema_pullback_continuation;
     const signal1 = evaluatePineScript(strat.pineScript, candleMap, '5m');
+
     assert(
         signal1.action === 'buy' || signal1.action === 'sell' || signal1.action === 'none' || signal1.action === 'close',
         `MTF Strategy evaluated cleanly: Action=${signal1.action}, Score=${signal1.score ?? 'N/A'}`

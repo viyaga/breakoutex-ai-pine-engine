@@ -237,12 +237,19 @@ export function evaluatePineScript(
                     htfHL2, htfHLC3, htfOHLC4,
                     htfTa, math, htfLast
                 );
-                if (Array.isArray(res)) return res[htfLast];
+                if (Array.isArray(res)) {
+                    if (Array.isArray(res[0])) {
+                        return res.map(arr => wrapSeries(arr));
+                    }
+                    return res[htfLast];
+                }
                 return res;
             }
+
             return exprFn;
         },
     };
+
 
     // ── input.* namespace ─────────────────────────────────────────
     const input = {
@@ -399,12 +406,8 @@ export function transformPineToJs(script: string, _last: number): string {
         'hline',
     ]);
 
-    // 4. Transform request.security(sym, tf, expr) -> request.security(sym, tf, (close, high, low, open, volume, hl2, hlc3, ohlc4, ta, math, last) => (expr))
-    s = s.replace(/request\.security\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/g,
-        (_match, sym, tf, expr) => {
-            return `request.security(${sym}, ${tf}, (close, high, low, open, volume, hl2, hlc3, ohlc4, ta, math, last) => (${expr}))`;
-        }
-    );
+    // 4. Transform request.security calls with robust balanced parentheses
+    s = transformSecurityCalls(s);
 
     // 5. Convert Pine series[N] offset access -> array[last - N]
     s = s.replace(/(\w+)\[(\d+)\]/g, (_, name, offset) => {
@@ -412,6 +415,9 @@ export function transformPineToJs(script: string, _last: number): string {
         if (n === 0) return `${name}[last]`;
         return `${name}[last - ${n}]`;
     });
+
+    // Strip Pine named argument labels e.g. "step = 0.1", "comment = 'x'", "stop = longStop", "limit = longTarget"
+    s = s.replace(/([(,]\s*)(?:step|step_size|comment|stop|limit|loss|profit|qty|when|overlay|precision|scale|format|title|defval|minval|maxval|options|inline|group|tooltip|lookahead|gaps)\s*=\s*/g, '$1');
 
     // 6. var type declarations
     s = s.replace(/\bvar\s+(float|int|bool|string|color|line|label|array<\w+>)\s+/g, 'let ');
@@ -432,12 +438,16 @@ export function transformPineToJs(script: string, _last: number): string {
     // 10. Indentation blocks -> JS braces
     s = convertIndentationToBraces(s);
 
+    // Add return statement to standalone expression lines inside function definitions
+    s = s.replace(/(function\s+[a-zA-Z_]\w*\s*\([^)]*\)\s*\{[\s\S]*?)([ \t]+)([a-zA-Z_]\w*(?:\[[^\]]+\])?)\s*\n(\s*\})/g, '$1$2return $3;\n$4');
+
     // 11. Remove type annotations in func params
     s = s.replace(/\((float|int|bool|string)\s+(\w+)/g, '($2');
     s = s.replace(/,\s*(float|int|bool|string)\s+(\w+)/g, ', $2');
 
     return s;
 }
+
 
 function removeMultiLineCalls(src: string, fnNames: string[]): string {
     for (const fn of fnNames) {
@@ -456,6 +466,94 @@ function removeMultiLineCalls(src: string, fnNames: string[]): string {
     }
     return src;
 }
+
+function transformSecurityCalls(src: string): string {
+    let result = '';
+    let idx = 0;
+    const target = 'request.security';
+
+    while (idx < src.length) {
+        const secIdx = src.indexOf(target, idx);
+        if (secIdx === -1) {
+            result += src.slice(idx);
+            break;
+        }
+
+        result += src.slice(idx, secIdx);
+        const openParen = src.indexOf('(', secIdx);
+        if (openParen === -1) {
+            result += target;
+            idx = secIdx + target.length;
+            continue;
+        }
+
+        // Parse balanced parentheses
+        let depth = 1;
+        let i = openParen + 1;
+        let insideStr: string | null = null;
+        while (i < src.length && depth > 0) {
+            const ch = src[i];
+            if (insideStr) {
+                if (ch === insideStr && src[i - 1] !== '\\') insideStr = null;
+            } else {
+                if (ch === '"' || ch === "'") insideStr = ch;
+                else if (ch === '(') depth++;
+                else if (ch === ')') depth--;
+            }
+            if (depth > 0) i++;
+        }
+
+        if (depth !== 0) {
+            result += src.slice(secIdx, openParen + 1);
+            idx = openParen + 1;
+            continue;
+        }
+
+        const argsStr = src.slice(openParen + 1, i);
+        const args: string[] = [];
+        let cur = '';
+        let d = 0;
+        let sQuote: string | null = null;
+        for (let j = 0; j < argsStr.length; j++) {
+            const ch = argsStr[j];
+            if (sQuote) {
+                cur += ch;
+                if (ch === sQuote && argsStr[j - 1] !== '\\') sQuote = null;
+            } else {
+                if (ch === '"' || ch === "'") {
+                    sQuote = ch;
+                    cur += ch;
+                } else if (ch === '(' || ch === '[' || ch === '{') {
+                    d++;
+                    cur += ch;
+                } else if (ch === ')' || ch === ']' || ch === '}') {
+                    d--;
+                    cur += ch;
+                } else if (ch === ',' && d === 0) {
+                    args.push(cur.trim());
+                    cur = '';
+                } else {
+                    cur += ch;
+                }
+            }
+        }
+        if (cur.trim()) args.push(cur.trim());
+
+        const sym = args[0] || 'syminfo.tickerid';
+        const tf = args[1] || '"5m"';
+        let expr = args[2] || 'close';
+
+        if (expr.startsWith('lookahead') || expr.startsWith('gaps')) {
+            expr = 'close';
+        }
+
+        result += `request.security(${sym}, ${tf}, (close, high, low, open, volume, hl2, hlc3, ohlc4, ta, math, last) => (${expr}))`;
+        idx = i + 1;
+    }
+
+    return result;
+}
+
 
 function findMatchingParen(src: string, openIdx: number): number {
     let depth = 1;
@@ -492,7 +590,8 @@ function convertIndentationToBraces(src: string): string {
             /^else\s*$/.test(trimmed) ||
             /^for\s/.test(trimmed) ||
             /^while\s/.test(trimmed) ||
-            /^switch\s/.test(trimmed);
+            /^switch\s/.test(trimmed) ||
+            /^[a-zA-Z_]\w*\s*\([^)]*\)\s*=>\s*$/.test(trimmed);
 
         if (opensBlock) {
             let nextIndent = -1;
@@ -513,12 +612,15 @@ function convertIndentationToBraces(src: string): string {
                     converted = cond.startsWith('(') ? `else if ${cond} {` : `else if (${cond}) {`;
                 } else if (/^else\s*$/.test(converted)) {
                     converted = 'else {';
+                } else if (/^[a-zA-Z_]\w*\s*\([^)]*\)\s*=>\s*$/.test(converted)) {
+                    converted = converted.replace(/^([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*=>\s*$/, 'function $1($2) {');
                 }
                 result.push(' '.repeat(indent) + converted);
                 stack.push(indent);
                 continue;
             }
         }
+
 
         result.push(line);
     }

@@ -6,17 +6,84 @@ import { generateWithGemini } from '../ai/gemini-client';
 import { backtestAllStrategies, BacktestResult } from '../pine/backtester';
 import { normalizeTimeframe } from '../pine/interpreter';
 
+const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 
+// Global Market Regime Cache across all bots & cycles
+export interface GlobalMarketRegimeCache {
+    evaluatedAt: number;
+    expiresAt: number;
+    response: AiMarketEvaluationResponse;
+    baselinePrice: number;
+    baselineAtr: number;
+    baselineEmaTrend: 'bullish' | 'bearish' | 'neutral';
+    baselineAdx: number;
+    baselineTrendStrength: 'strong_trend' | 'moderate_trend' | 'ranging_chop';
+}
 
-// In-memory evaluation cache to track interval and market volatility baseline
-interface CacheEntry {
+const globalRegimeCache = new Map<string, GlobalMarketRegimeCache>();
+
+// Per-bot evaluation cache
+interface BotCacheEntry {
     lastEvaluationTs: number;
     strategyId: string;
     baselineAtr?: number;
     baselineEmaTrend?: 'bullish' | 'bearish' | 'neutral';
 }
-const evaluationCache = new Map<string, CacheEntry>();
+const botEvaluationCache = new Map<string, BotCacheEntry>();
+
+function getRegimeCacheKey(symbol: string, timeframe: string, mode: string): string {
+    return `${symbol.toUpperCase().trim()}:${timeframe.toLowerCase().trim()}:${mode.toLowerCase().trim()}`;
+}
+
+/** Check if cached AI regime is still mathematically and structurally valid */
+export function isRegimeCacheValid(
+    cached: GlobalMarketRegimeCache,
+    currentSnapshot: ReturnType<typeof computeMarketSnapshot>
+): { valid: boolean; reason?: string } {
+    const now = Date.now();
+
+    // 1. Time TTL check (2 hours)
+    if (now >= cached.expiresAt) {
+        return { valid: false, reason: 'Cache TTL expired' };
+    }
+
+    // 2. Volatility Shock Guard (ATR surge > 1.8x or collapse < 0.5x)
+    if (cached.baselineAtr > 0 && currentSnapshot.atr > 0) {
+        const atrRatio = currentSnapshot.atr / cached.baselineAtr;
+        if (atrRatio > 1.8 || atrRatio < 0.5) {
+            return { valid: false, reason: `Volatility shock (ATR ratio ${atrRatio.toFixed(2)}x)` };
+        }
+    }
+
+    // 3. Trend Reversal Guard (EMA Direction flipped)
+    if (
+        cached.baselineEmaTrend !== 'neutral' &&
+        currentSnapshot.emaTrend !== 'neutral' &&
+        cached.baselineEmaTrend !== currentSnapshot.emaTrend
+    ) {
+        return { valid: false, reason: `Trend flipped from ${cached.baselineEmaTrend} to ${currentSnapshot.emaTrend}` };
+    }
+
+    // 4. Momentum Regime Transition (ADX shifted between trending and chop)
+    if (
+        (cached.baselineAdx < 20 && currentSnapshot.adx >= 25) ||
+        (cached.baselineAdx >= 25 && currentSnapshot.adx < 18)
+    ) {
+        return { valid: false, reason: `ADX shifted from ${cached.baselineAdx} to ${currentSnapshot.adx}` };
+    }
+
+    // 5. Significant Price Displacement (> 4% move from cached baseline)
+    if (cached.baselinePrice > 0 && currentSnapshot.currentPrice > 0) {
+        const priceDiff = Math.abs(currentSnapshot.currentPrice - cached.baselinePrice) / cached.baselinePrice;
+        if (priceDiff > 0.04) {
+            return { valid: false, reason: `Price displaced by ${(priceDiff * 100).toFixed(1)}%` };
+        }
+    }
+
+    return { valid: true };
+}
+
 
 export interface AiMarketEvaluationResponse {
     marketCondition: 'trending_bullish' | 'trending_bearish' | 'ranging_choppy' | 'high_volatility_breakout' | 'low_volatility_consolidation';
@@ -146,19 +213,28 @@ export function computeMarketSnapshot(candles: Candle[], htf1hCandles?: Candle[]
     };
 }
 
-/** Check if bot is due for an AI evaluation (scheduled 6h interval or dynamic regime shock) */
+/** Check if bot is due for an AI evaluation (scheduled interval or dynamic regime shock) */
 export function isAiEvaluationDue(
     bot: PineBotConfig,
     currentSnapshot?: ReturnType<typeof computeMarketSnapshot>
 ): boolean {
     if (!bot.IS_AI_MANAGED) return false;
 
-    const cached = evaluationCache.get(bot.id);
+    const baseTf = bot.TIMEFRAME || '5m';
+    const cacheKey = getRegimeCacheKey(bot.SYMBOL, baseTf, bot.MODE);
+    const cachedGlobal = globalRegimeCache.get(cacheKey);
+
+    // If a valid global regime cache exists and snapshot is steady, not due
+    if (cachedGlobal && currentSnapshot && isRegimeCacheValid(cachedGlobal, currentSnapshot).valid) {
+        return false;
+    }
+
+    const botCached = botEvaluationCache.get(bot.id);
     const now = Date.now();
 
-    // 1. Time-based check (6 hours)
+    // 1. Time-based check (6 hours max bot window)
     let isTimeDue = true;
-    if (cached && now - cached.lastEvaluationTs < SIX_HOURS_MS) {
+    if (botCached && now - botCached.lastEvaluationTs < SIX_HOURS_MS) {
         isTimeDue = false;
     } else if (bot.LAST_AI_EVALUATION) {
         const lastEvalTs = new Date(bot.LAST_AI_EVALUATION).getTime();
@@ -170,14 +246,13 @@ export function isAiEvaluationDue(
     if (isTimeDue) return true;
 
     // 2. Event-Driven Regime Shock Invalidation:
-    // If ATR suddenly expands > 2.2x baseline or trend abruptly flips against cached position
-    if (cached && currentSnapshot) {
-        if (cached.baselineAtr && currentSnapshot.atr > cached.baselineAtr * 2.2) {
-            console.log(`[AI MarketEvaluator][${bot.id}] ⚡ Regime Shock Trigger: Volatility surged (ATR ${currentSnapshot.atr} vs base ${cached.baselineAtr})`);
+    if (botCached && currentSnapshot) {
+        if (botCached.baselineAtr && currentSnapshot.atr > botCached.baselineAtr * 2.0) {
+            console.log(`[AI MarketEvaluator][${bot.id}] ⚡ Regime Shock Trigger: Volatility surged (ATR ${currentSnapshot.atr} vs base ${botCached.baselineAtr})`);
             return true;
         }
-        if (cached.baselineEmaTrend && cached.baselineEmaTrend !== 'neutral' && currentSnapshot.emaTrend !== 'neutral' && cached.baselineEmaTrend !== currentSnapshot.emaTrend) {
-            console.log(`[AI MarketEvaluator][${bot.id}] ⚡ Regime Shift Trigger: EMA Trend flipped from ${cached.baselineEmaTrend} to ${currentSnapshot.emaTrend}`);
+        if (botCached.baselineEmaTrend && botCached.baselineEmaTrend !== 'neutral' && currentSnapshot.emaTrend !== 'neutral' && botCached.baselineEmaTrend !== currentSnapshot.emaTrend) {
+            console.log(`[AI MarketEvaluator][${bot.id}] ⚡ Regime Shift Trigger: EMA Trend flipped from ${botCached.baselineEmaTrend} to ${currentSnapshot.emaTrend}`);
             return true;
         }
     }
@@ -186,7 +261,6 @@ export function isAiEvaluationDue(
 }
 
 /** Evaluate market regime directly via Gemini AI and assign optimal strategy */
-
 export async function evaluateAndApplyAiStrategy(
     bot: PineBotConfig,
     candles: Candle[],
@@ -196,123 +270,135 @@ export async function evaluateAndApplyAiStrategy(
     const symbol = bot.SYMBOL;
     const baseTf = bot.TIMEFRAME || '5m';
 
-    console.log(`[AI MarketEvaluator][${botId}] ── Triggering Direct Gemini AI Market Analysis & Backtest for ${symbol} ──`);
-
     const snapshot = computeMarketSnapshot(candles, htfCandles);
-    const catalog = getStrategyCatalogForAi();
-
-    // 1. Run live in-memory backtest simulation on all candidate strategies
-    const candleMap = new Map<string, Candle[]>();
-    candleMap.set(normalizeTimeframe(baseTf), candles);
-    if (htfCandles && htfCandles.length) {
-        candleMap.set('1h', htfCandles);
-    }
-
-    const backtestResults = backtestAllStrategies(Object.values(STRATEGY_LIBRARY), candleMap, baseTf);
-    const backtestLeaderboard = backtestResults.map((r, idx) =>
-        `${idx + 1}. [${r.strategyId}] "${r.strategyName}": WinRate ${r.winRate}%, ProfitFactor ${r.profitFactor}, NetPnL ${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent}%, Trades: ${r.totalTrades} (Status: ${r.status.toUpperCase()})`
-    ).join('\n');
-
-    console.log(`[AI MarketEvaluator][${botId}] Live Backtest Top Performer: "${backtestResults[0]?.strategyName}" (NetPnL: ${backtestResults[0]?.netPnlPercent}%, WinRate: ${backtestResults[0]?.winRate}%)`);
+    const cacheKey = getRegimeCacheKey(symbol, baseTf, bot.MODE);
+    const cachedGlobal = globalRegimeCache.get(cacheKey);
 
     let aiResult: AiMarketEvaluationResponse | null = null;
+    let backtestResults: BacktestResult[] = [];
 
-    // Attempt direct Gemini API call
-    if (env.geminiApiKey) {
-        try {
-            const systemPrompt = `You are BreakoutEx Quantitative Market Regime & Strategy Deductor.
-Your task is to analyze real-time multi-timeframe technical indicators, market regime metrics, AND empirical in-memory backtest results on recent bars of ${symbol}, diagnose the exact market condition (regime), and select the SINGLE BEST strategy from the provided Strategy Library matching the user's risk preference (${bot.MODE} mode).
+    // 1. Check Global Smart Cache (Zero token consumption if valid)
+    if (cachedGlobal) {
+        const cacheCheck = isRegimeCacheValid(cachedGlobal, snapshot);
+        if (cacheCheck.valid) {
+            const ageMins = Math.round((Date.now() - cachedGlobal.evaluatedAt) / 60_000);
+            console.log(`[AI Cache] ⚡ Cache HIT for ${cacheKey} (Age: ${ageMins}m) — Reusing active regime, 0 LLM tokens consumed.`);
+            aiResult = cachedGlobal.response;
+        } else {
+            console.log(`[AI Cache] 🔄 Cache INVALIDATED for ${cacheKey} (${cacheCheck.reason}) — Re-analyzing market.`);
+        }
+    }
 
-Strategy Catalog:
-${catalog.map((s, idx) => `${idx + 1}. [${s.id}] "${s.name}": ${s.description} (Target Regimes: ${s.bestMarketConditions.join(', ')})`).join('\n')}
+    // 2. If Cache Miss or Invalidated, run Backtest & Query Gemini AI
+    if (!aiResult) {
+        console.log(`[AI MarketEvaluator][${botId}] ── Triggering Direct Gemini AI Market Analysis & Backtest for ${symbol} ──`);
+
+        const catalog = getStrategyCatalogForAi();
+
+        // Run live in-memory backtest simulation on candidate strategies
+        const candleMap = new Map<string, Candle[]>();
+        candleMap.set(normalizeTimeframe(baseTf), candles);
+        if (htfCandles && htfCandles.length) {
+            candleMap.set('1h', htfCandles);
+        }
+
+        backtestResults = backtestAllStrategies(Object.values(STRATEGY_LIBRARY), candleMap, baseTf);
+        // Compact backtest representation (top 3 strategies only to save tokens)
+        const compactBt = backtestResults.slice(0, 3).map((r, i) =>
+            `${i + 1}.${r.strategyId}:WR=${r.winRate}%,PF=${r.profitFactor},PnL=${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent}%`
+        ).join(' | ');
+
+
+        console.log(`[AI MarketEvaluator][${botId}] Live Backtest Top Performer: "${backtestResults[0]?.strategyName}" (NetPnL: ${backtestResults[0]?.netPnlPercent}%, WinRate: ${backtestResults[0]?.winRate}%)`);
+
+        // Direct Gemini API call with ultra-compact token-optimized prompt & response schema
+        if (env.geminiApiKey) {
+            try {
+                const systemPrompt = `You are BreakoutEx Quant Regime Deductor.
+Input: Market metrics & historical backtest leaderboard.
+Task: Deduce regime and pick best strategy ID from catalog matching user mode (${bot.MODE}).
+Catalog:
+1:mtf_supertrend_vwap_trend(trending_bullish/trending_bearish)
+2:mtf_ema_pullback_continuation(trending_bullish/trending_bearish)
+3:mtf_donchian_breakout(high_volatility_breakout/trending_bullish/trending_bearish)
+4:mtf_volatility_squeeze_breakout(low_volatility_consolidation/high_volatility_breakout)
+5:mtf_bollinger_mean_reversion(ranging_choppy/low_volatility_consolidation)
+6:mtf_momentum_exhaustion_reversal(ranging_choppy/low_volatility_consolidation)
+7:mtf_atr_range_breakout(low_volatility_consolidation/high_volatility_breakout)
 
 Rules:
-1. marketCondition must be one of:
-   - "trending_bullish": Strong uptrend (ADX >= 22, RSI > 52, Price > EMAs, +DI > -DI).
-   - "trending_bearish": Strong downtrend (ADX >= 22, RSI < 48, Price < EMAs, -DI > +DI).
-   - "ranging_choppy": Sideways oscillation (ADX < 20, flat EMAs, RSI oscillating between 40-60).
-   - "high_volatility_breakout": Expanding ATR/volatility, volume surge > 1.3x, breaking out of contraction.
-   - "low_volatility_consolidation": Contracting volatility, low ATR, Bollinger squeeze (isBbSqueeze=true).
-2. selectedStrategyId MUST be one of: ${catalog.map(s => `"${s.id}"`).join(', ')}.
-3. EMPIRICAL BACKTEST INTEGRATION:
-   You are provided with empirical backtest results executed on the recent historical bars for this exact asset.
-   Cross-reference the market condition with the backtest results. Heavily favor strategies that have demonstrated positive win rates (>=50%) and profit factors (>=1.2) under these exact market dynamics.
-4. recommendedTimeframe: "1m", "3m", "5m", "15m", "30m", or "1h".
-5. recommendedTp: Dynamic Take Profit % calibrated to current ATR (typically 1.5% to 4.0%).
-6. recommendedSl: Dynamic Stop Loss % ensuring (recommendedTp / recommendedSl) >= ${Math.max(1.0, bot.MIN_RR || 1.5)}.
-7. standAside: boolean (true if market is erratic, unreadable, or extreme chop where all strategies are losing).
-8. reasoning: 2-3 concise quantitative sentences explaining the regime diagnosis (mentioning ADX, RSI, EMAs, Squeeze) and why the chosen strategy has statistical edge and backtest validation.
+1. regime in ["trending_bullish","trending_bearish","ranging_choppy","high_volatility_breakout","low_volatility_consolidation"].
+2. strat MUST be valid ID from catalog. Strongly favor strategies with positive backtest WR (>=50%) and PF (>=1.2).
+3. tp/sl: Dynamic % calibrated to ATR ensuring (tp/sl) >= ${Math.max(1.0, bot.MIN_RR || 1.5)}.
+4. conf: "H"|"M"|"L", stand: true if market is unreadable/whipsaw.
+5. why: 1 concise sentence.
 
-Respond strictly with valid JSON without markdown fences:
-{
-  "marketCondition": "trending_bullish",
-  "confidence": "high",
-  "selectedStrategyId": "mtf_bullish_trend_pullback",
-  "strategyName": "MTF Bullish Trend & EMA Pullback",
-  "reasoning": "...",
-  "recommendedTimeframe": "5m",
-  "recommendedTp": 2.2,
-  "recommendedSl": 1.0,
-  "standAside": false
-}`;
+Output strict single-line JSON:
+{"regime":"trending_bullish","strat":"mtf_supertrend_vwap_trend","tf":"5m","tp":2.5,"sl":1.0,"conf":"H","stand":false,"why":"Bullish ADX 26 with 71% WR backtest"}`;
 
-            const userPrompt = `Symbol: ${symbol} (${bot.EXCHANGE.toUpperCase()})
-Trading Mode: ${bot.MODE.toUpperCase()} | Required Min RR: ${bot.MIN_RR || 1.5} | Min Score: ${bot.MIN_SCORE || 50}
-Current Price: $${snapshot.currentPrice} | Approx 24h Change: ${snapshot.change24h}%
-Intraday Base TF (${baseTf}):
-- RSI (14): ${snapshot.rsi}
-- EMA Trend Bias: ${snapshot.emaTrend}
-- ADX (14): ${snapshot.adx} (+DI: ${snapshot.diPlus}, -DI: ${snapshot.diMinus}) -> ${snapshot.trendStrength}
-- ATR: ${snapshot.atr} (${snapshot.atrPercent}% of price) -> Volatility: ${snapshot.volatilityLevel}
-- Bollinger BandWidth: ${snapshot.bbWidth} | In Volatility Squeeze: ${snapshot.isBbSqueeze}
-- Volume Ratio (vs 20-period avg): ${snapshot.volumeRatio}x
-Macro Higher TF (1h):
-- 1h Trend: ${snapshot.htf1hTrend} | 1h RSI: ${snapshot.htf1hRsi}
+                const userPrompt = `PAIR:${symbol}|MODE:${bot.MODE.toUpperCase()}|MIN_RR:${bot.MIN_RR || 1.5}
+5M:P=$${snapshot.currentPrice}|24h=${snapshot.change24h}%|RSI=${snapshot.rsi}|EMA=${snapshot.emaTrend}|ADX=${snapshot.adx}(+DI:${snapshot.diPlus},-DI:${snapshot.diMinus})|ATR=${snapshot.atrPercent}%|BBW=${snapshot.bbWidth}(Sq:${snapshot.isBbSqueeze ? 1 : 0})|Vol=${snapshot.volumeRatio}x
+1H:Trend=${snapshot.htf1hTrend}|RSI=${snapshot.htf1hRsi}
+BT:${compactBt}`;
 
-Empirical In-Memory Backtest Leaderboard (Tested on recent ${candles.length} closed bars of ${symbol}):
-${backtestLeaderboard}
+                const rawText = await generateWithGemini({
+                    prompt: userPrompt,
+                    systemInstruction: systemPrompt,
+                    temperature: 0.1,
+                });
 
-Analyze the quantitative metrics and backtest leaderboard, deduce the market regime, and select the optimal strategy from the catalog now.`;
+                const cleaned = rawText.replace(/```json\n?|\n?```/g, '').trim();
+                const json = JSON.parse(cleaned);
 
-            const rawText = await generateWithGemini({
-                prompt: userPrompt,
+                const stratId = json.strat || json.selectedStrategyId;
+                const validStrategyIds = Object.keys(STRATEGY_LIBRARY);
+                const validConditions = [
+                    'trending_bullish',
+                    'trending_bearish',
+                    'ranging_choppy',
+                    'high_volatility_breakout',
+                    'low_volatility_consolidation',
+                ];
 
-                systemInstruction: systemPrompt,
-                temperature: 0.1,
-            });
+                if (stratId && validStrategyIds.includes(stratId)) {
+                    const stratDef = getStrategyById(stratId)!;
+                    const rawRegime = json.regime || json.marketCondition || 'ranging_choppy';
+                    const rawConf = String(json.conf || json.confidence || 'H').toUpperCase();
+                    const mappedConf = rawConf.startsWith('H') ? 'high' : rawConf.startsWith('M') ? 'medium' : 'low';
 
-            const cleaned = rawText.replace(/```json\n?|\n?```/g, '').trim();
-            const json = JSON.parse(cleaned);
+                    aiResult = {
+                        marketCondition: validConditions.includes(rawRegime) ? rawRegime : 'ranging_choppy',
+                        confidence: mappedConf as 'high' | 'medium' | 'low',
+                        selectedStrategyId: stratId,
+                        strategyName: stratDef.name,
+                        reasoning: String(json.why || json.reasoning || `Selected ${stratDef.name} via quantitative deduction.`),
+                        recommendedTimeframe: json.tf || json.recommendedTimeframe || stratDef.recommendedTimeframe,
+                        recommendedTp: Math.max(0.4, Math.min(Number(json.tp || json.recommendedTp) || stratDef.defaultTpPercent, 10.0)),
+                        recommendedSl: Math.max(0.2, Math.min(Number(json.sl || json.recommendedSl) || stratDef.defaultSlPercent, 5.0)),
+                        standAside: Boolean(json.stand || json.standAside),
+                    };
 
-            const validStrategyIds = catalog.map(s => s.id);
-            const validConditions = [
-                'trending_bullish',
-                'trending_bearish',
-                'ranging_choppy',
-                'high_volatility_breakout',
-                'low_volatility_consolidation',
-            ];
-
-            if (json.selectedStrategyId && validStrategyIds.includes(json.selectedStrategyId)) {
-                const stratDef = getStrategyById(json.selectedStrategyId)!;
-                aiResult = {
-                    marketCondition: validConditions.includes(json.marketCondition) ? json.marketCondition : 'ranging_choppy',
-                    confidence: ['high', 'medium', 'low'].includes(json.confidence) ? json.confidence : 'high',
-                    selectedStrategyId: json.selectedStrategyId,
-                    strategyName: String(json.strategyName || stratDef.name),
-                    reasoning: String(json.reasoning || `Selected ${stratDef.name} via Gemini AI quantitative analysis.`),
-                    recommendedTimeframe: json.recommendedTimeframe || stratDef.recommendedTimeframe,
-                    recommendedTp: Math.max(0.4, Math.min(Number(json.recommendedTp) || stratDef.defaultTpPercent, 10.0)),
-                    recommendedSl: Math.max(0.2, Math.min(Number(json.recommendedSl) || stratDef.defaultSlPercent, 5.0)),
-                    standAside: Boolean(json.standAside),
-                };
+                    // Populate Global Cache for subsequent bots/cycles
+                    globalRegimeCache.set(cacheKey, {
+                        evaluatedAt: Date.now(),
+                        expiresAt: Date.now() + TWO_HOURS_MS,
+                        response: aiResult,
+                        baselinePrice: snapshot.currentPrice,
+                        baselineAtr: snapshot.atr,
+                        baselineEmaTrend: snapshot.emaTrend,
+                        baselineAdx: snapshot.adx,
+                        baselineTrendStrength: snapshot.trendStrength,
+                    });
+                }
+            } catch (err: any) {
+                console.warn(`[AI MarketEvaluator][${botId}] Direct Gemini evaluation failed (${err?.message}). Falling back to quant rules.`);
             }
-        } catch (err: any) {
-            console.warn(`[AI MarketEvaluator][${botId}] Direct Gemini evaluation failed (${err?.message}). Falling back to quant rules.`);
+        } else {
+            console.warn(`[AI MarketEvaluator][${botId}] GEMINI_API_KEY is not set. Using local quantitative rule engine.`);
         }
-    } else {
-        console.warn(`[AI MarketEvaluator][${botId}] GEMINI_API_KEY is not set. Using local quantitative rule engine.`);
     }
+
+
 
     // Local Quant Rule Fallback (if Gemini offline or key missing)
     if (!aiResult) {
@@ -323,16 +409,16 @@ Analyze the quantitative metrics and backtest leaderboard, deduce the market reg
         const isBearish = snapshot.trendStrength === 'strong_trend' && (snapshot.emaTrend === 'bearish' || snapshot.htf1hTrend === 'bearish') && snapshot.rsi < 50;
 
         if (snapshot.isBbSqueeze || snapshot.volatilityLevel === 'high') {
-            fallbackId = snapshot.volatilityLevel === 'high' ? 'mtf_donchian_breakout_scalper' : 'mtf_volatility_squeeze_breakout';
+            fallbackId = snapshot.volatilityLevel === 'high' ? 'mtf_donchian_breakout' : 'mtf_volatility_squeeze_breakout';
             fallbackCond = snapshot.volatilityLevel === 'high' ? 'high_volatility_breakout' : 'low_volatility_consolidation';
         } else if (isBullish) {
             fallbackId = 'mtf_supertrend_vwap_trend';
             fallbackCond = 'trending_bullish';
         } else if (isBearish) {
-            fallbackId = 'mtf_bearish_breakdown';
+            fallbackId = 'mtf_ema_pullback_continuation';
             fallbackCond = 'trending_bearish';
         } else if (snapshot.adx < 20) {
-            fallbackId = 'mtf_macd_stoch_reversal';
+            fallbackId = 'mtf_momentum_exhaustion_reversal';
             fallbackCond = 'ranging_choppy';
         }
 
@@ -345,7 +431,7 @@ Analyze the quantitative metrics and backtest leaderboard, deduce the market reg
             }
         }
 
-        const stratDef = getStrategyById(fallbackId) || STRATEGY_LIBRARY.mtf_bullish_trend_pullback;
+        const stratDef = getStrategyById(fallbackId) || STRATEGY_LIBRARY.mtf_supertrend_vwap_trend;
         aiResult = {
             marketCondition: fallbackCond,
             confidence: 'medium',
@@ -361,7 +447,8 @@ Analyze the quantitative metrics and backtest leaderboard, deduce the market reg
 
 
     // Apply selected strategy
-    const selectedStrat = getStrategyById(aiResult.selectedStrategyId) || STRATEGY_LIBRARY.mtf_bullish_trend_pullback;
+    const selectedStrat = getStrategyById(aiResult.selectedStrategyId) || STRATEGY_LIBRARY.mtf_supertrend_vwap_trend;
+
 
     const now = new Date();
     const nextEval = new Date(now.getTime() + SIX_HOURS_MS);
@@ -379,12 +466,13 @@ Analyze the quantitative metrics and backtest leaderboard, deduce the market reg
     bot.NEXT_AI_EVALUATION = nextEval.toISOString();
 
     // Cache evaluation details
-    evaluationCache.set(botId, {
+    botEvaluationCache.set(botId, {
         lastEvaluationTs: now.getTime(),
         strategyId: selectedStrat.id,
         baselineAtr: snapshot.atr,
         baselineEmaTrend: snapshot.emaTrend,
     });
+
 
     console.log(`[AI MarketEvaluator][${botId}] ✓ AI Selected Strategy: "${selectedStrat.name}" [${selectedStrat.id}] | Regime: ${aiResult.marketCondition} | Next Eval: ${nextEval.toISOString()}`);
     console.log(`[AI MarketEvaluator][${botId}] Reasoning: ${aiResult.reasoning}`);
