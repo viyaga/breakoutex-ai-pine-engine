@@ -1,16 +1,13 @@
-// ================================================================
-// AI Market Evaluator (Direct Gemini AI Integration)
-// Evaluates multi-timeframe quant metrics and dynamically assigns
-// the optimal strategy from the Strategy Library directly via Gemini.
-// ================================================================
-
 import env from '../config/env';
 import { PineBotConfig, Candle } from '../config/types';
 import { getStrategyById, getStrategyCatalogForAi, STRATEGY_LIBRARY } from '../pine/strategy-library';
 import * as ind from '../pine/indicators';
 import { generateWithGemini } from '../ai/gemini-client';
+import { backtestAllStrategies, BacktestResult } from '../pine/backtester';
+import { normalizeTimeframe } from '../pine/interpreter';
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+
 
 // In-memory evaluation cache to track interval and market volatility baseline
 interface CacheEntry {
@@ -189,6 +186,7 @@ export function isAiEvaluationDue(
 }
 
 /** Evaluate market regime directly via Gemini AI and assign optimal strategy */
+
 export async function evaluateAndApplyAiStrategy(
     bot: PineBotConfig,
     candles: Candle[],
@@ -196,19 +194,34 @@ export async function evaluateAndApplyAiStrategy(
 ): Promise<void> {
     const botId = bot.id;
     const symbol = bot.SYMBOL;
+    const baseTf = bot.TIMEFRAME || '5m';
 
-    console.log(`[AI MarketEvaluator][${botId}] ── Triggering Direct Gemini AI Market Analysis for ${symbol} ──`);
+    console.log(`[AI MarketEvaluator][${botId}] ── Triggering Direct Gemini AI Market Analysis & Backtest for ${symbol} ──`);
 
     const snapshot = computeMarketSnapshot(candles, htfCandles);
     const catalog = getStrategyCatalogForAi();
+
+    // 1. Run live in-memory backtest simulation on all candidate strategies
+    const candleMap = new Map<string, Candle[]>();
+    candleMap.set(normalizeTimeframe(baseTf), candles);
+    if (htfCandles && htfCandles.length) {
+        candleMap.set('1h', htfCandles);
+    }
+
+    const backtestResults = backtestAllStrategies(Object.values(STRATEGY_LIBRARY), candleMap, baseTf);
+    const backtestLeaderboard = backtestResults.map((r, idx) =>
+        `${idx + 1}. [${r.strategyId}] "${r.strategyName}": WinRate ${r.winRate}%, ProfitFactor ${r.profitFactor}, NetPnL ${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent}%, Trades: ${r.totalTrades} (Status: ${r.status.toUpperCase()})`
+    ).join('\n');
+
+    console.log(`[AI MarketEvaluator][${botId}] Live Backtest Top Performer: "${backtestResults[0]?.strategyName}" (NetPnL: ${backtestResults[0]?.netPnlPercent}%, WinRate: ${backtestResults[0]?.winRate}%)`);
 
     let aiResult: AiMarketEvaluationResponse | null = null;
 
     // Attempt direct Gemini API call
     if (env.geminiApiKey) {
         try {
-            const systemPrompt = `You are BreakoutEx Quantitative Market Regime Analyzer.
-Your task is to analyze real-time multi-timeframe technical indicators and quantitative metrics for a crypto perpetual contract, diagnose the exact market condition (regime), and select the SINGLE BEST strategy from the provided Strategy Library matching the user's risk preference (${bot.MODE} mode).
+            const systemPrompt = `You are BreakoutEx Quantitative Market Regime & Strategy Deductor.
+Your task is to analyze real-time multi-timeframe technical indicators, market regime metrics, AND empirical in-memory backtest results on recent bars of ${symbol}, diagnose the exact market condition (regime), and select the SINGLE BEST strategy from the provided Strategy Library matching the user's risk preference (${bot.MODE} mode).
 
 Strategy Catalog:
 ${catalog.map((s, idx) => `${idx + 1}. [${s.id}] "${s.name}": ${s.description} (Target Regimes: ${s.bestMarketConditions.join(', ')})`).join('\n')}
@@ -221,12 +234,14 @@ Rules:
    - "high_volatility_breakout": Expanding ATR/volatility, volume surge > 1.3x, breaking out of contraction.
    - "low_volatility_consolidation": Contracting volatility, low ATR, Bollinger squeeze (isBbSqueeze=true).
 2. selectedStrategyId MUST be one of: ${catalog.map(s => `"${s.id}"`).join(', ')}.
-3. Match the strategy whose target regimes best exploit the detected market condition and risk mode (${bot.MODE}).
+3. EMPIRICAL BACKTEST INTEGRATION:
+   You are provided with empirical backtest results executed on the recent historical bars for this exact asset.
+   Cross-reference the market condition with the backtest results. Heavily favor strategies that have demonstrated positive win rates (>=50%) and profit factors (>=1.2) under these exact market dynamics.
 4. recommendedTimeframe: "1m", "3m", "5m", "15m", "30m", or "1h".
 5. recommendedTp: Dynamic Take Profit % calibrated to current ATR (typically 1.5% to 4.0%).
 6. recommendedSl: Dynamic Stop Loss % ensuring (recommendedTp / recommendedSl) >= ${Math.max(1.0, bot.MIN_RR || 1.5)}.
-7. standAside: boolean (true if market is erratic, unreadable, or extreme chop where cash is best).
-8. reasoning: 2-3 concise quantitative sentences explaining the regime diagnosis (mentioning ADX, RSI, EMAs, Squeeze) and why the chosen strategy has statistical edge.
+7. standAside: boolean (true if market is erratic, unreadable, or extreme chop where all strategies are losing).
+8. reasoning: 2-3 concise quantitative sentences explaining the regime diagnosis (mentioning ADX, RSI, EMAs, Squeeze) and why the chosen strategy has statistical edge and backtest validation.
 
 Respond strictly with valid JSON without markdown fences:
 {
@@ -244,7 +259,7 @@ Respond strictly with valid JSON without markdown fences:
             const userPrompt = `Symbol: ${symbol} (${bot.EXCHANGE.toUpperCase()})
 Trading Mode: ${bot.MODE.toUpperCase()} | Required Min RR: ${bot.MIN_RR || 1.5} | Min Score: ${bot.MIN_SCORE || 50}
 Current Price: $${snapshot.currentPrice} | Approx 24h Change: ${snapshot.change24h}%
-Intraday Base TF (5m):
+Intraday Base TF (${baseTf}):
 - RSI (14): ${snapshot.rsi}
 - EMA Trend Bias: ${snapshot.emaTrend}
 - ADX (14): ${snapshot.adx} (+DI: ${snapshot.diPlus}, -DI: ${snapshot.diMinus}) -> ${snapshot.trendStrength}
@@ -254,10 +269,14 @@ Intraday Base TF (5m):
 Macro Higher TF (1h):
 - 1h Trend: ${snapshot.htf1hTrend} | 1h RSI: ${snapshot.htf1hRsi}
 
-Analyze the quantitative metrics, deduce the market regime, and select the optimal strategy from the catalog now.`;
+Empirical In-Memory Backtest Leaderboard (Tested on recent ${candles.length} closed bars of ${symbol}):
+${backtestLeaderboard}
+
+Analyze the quantitative metrics and backtest leaderboard, deduce the market regime, and select the optimal strategy from the catalog now.`;
 
             const rawText = await generateWithGemini({
                 prompt: userPrompt,
+
                 systemInstruction: systemPrompt,
                 temperature: 0.1,
             });
@@ -307,7 +326,7 @@ Analyze the quantitative metrics, deduce the market regime, and select the optim
             fallbackId = snapshot.volatilityLevel === 'high' ? 'mtf_donchian_breakout_scalper' : 'mtf_volatility_squeeze_breakout';
             fallbackCond = snapshot.volatilityLevel === 'high' ? 'high_volatility_breakout' : 'low_volatility_consolidation';
         } else if (isBullish) {
-            fallbackId = 'mtf_bullish_trend_pullback';
+            fallbackId = 'mtf_supertrend_vwap_trend';
             fallbackCond = 'trending_bullish';
         } else if (isBearish) {
             fallbackId = 'mtf_bearish_breakdown';
@@ -317,19 +336,29 @@ Analyze the quantitative metrics, deduce the market regime, and select the optim
             fallbackCond = 'ranging_choppy';
         }
 
+        // If top backtest strategy is profitable and matches regime direction, promote it
+        const topBacktest = backtestResults[0];
+        if (topBacktest && topBacktest.status === 'profitable' && topBacktest.winRate >= 50) {
+            const topDef = getStrategyById(topBacktest.strategyId);
+            if (topDef && topDef.bestMarketConditions.includes(fallbackCond)) {
+                fallbackId = topDef.id;
+            }
+        }
+
         const stratDef = getStrategyById(fallbackId) || STRATEGY_LIBRARY.mtf_bullish_trend_pullback;
         aiResult = {
             marketCondition: fallbackCond,
             confidence: 'medium',
             selectedStrategyId: stratDef.id,
             strategyName: stratDef.name,
-            reasoning: `Rule-based quant selection: ADX=${snapshot.adx} (${snapshot.trendStrength}), RSI=${snapshot.rsi}, ATR=${snapshot.atrPercent}%, 1hTrend=${snapshot.htf1hTrend}.`,
+            reasoning: `Empirical quant fallback selection: ${stratDef.name} (ADX=${snapshot.adx} [${snapshot.trendStrength}], RSI=${snapshot.rsi}, ATR=${snapshot.atrPercent}%, 1hTrend=${snapshot.htf1hTrend}).`,
             recommendedTimeframe: stratDef.recommendedTimeframe,
             recommendedTp: stratDef.defaultTpPercent,
             recommendedSl: stratDef.defaultSlPercent,
             standAside: false,
         };
     }
+
 
     // Apply selected strategy
     const selectedStrat = getStrategyById(aiResult.selectedStrategyId) || STRATEGY_LIBRARY.mtf_bullish_trend_pullback;

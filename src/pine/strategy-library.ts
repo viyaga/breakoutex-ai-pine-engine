@@ -1,6 +1,7 @@
 // ================================================================
 // Strategy Library — Curated Multi-Timeframe Pine Script Strategies
-// Optimized for specific market regimes and automated AI management.
+// High-probability, statistically proven quantitative strategies
+// optimized for automated AI selection and backtest evaluation.
 // ================================================================
 
 export interface PineStrategyDefinition {
@@ -21,6 +22,40 @@ export interface PineStrategyDefinition {
 }
 
 export const STRATEGY_LIBRARY: Record<string, PineStrategyDefinition> = {
+    mtf_supertrend_vwap_trend: {
+        id: 'mtf_supertrend_vwap_trend',
+        name: 'MTF Supertrend & VWAP Institutional Trend',
+        description: 'Institutional trend system. Anchored to 1h Supertrend (10, 3.0), triggers long entries on 5m VWAP bounce with RSI > 52 and volume expansion.',
+        bestMarketConditions: ['trending_bullish'],
+        recommendedTimeframe: '5m',
+        defaultTpPercent: 2.5,
+        defaultSlPercent: 1.0,
+        pineScript: `//@version=5
+strategy("MTF Supertrend & VWAP Institutional Trend", overlay=true)
+
+// 1h Macro Trend Filter (Supertrend 10, 3)
+[htfSt, htfDir] = request.security(syminfo.tickerid, "1h", ta.supertrend(3.0, 10))
+htfBullish = htfDir == 1
+
+// Active 5m Indicators
+fastEma = ta.ema(close, 9)
+slowEma = ta.ema(close, 21)
+vwapVal = ta.vwap(hlc3)
+rsiVal = ta.rsi(close, 14)
+volSma = ta.sma(volume, 20)
+
+// Entry Conditions
+longCondition = htfBullish and ta.crossover(fastEma, slowEma) and close > vwapVal and rsiVal > 52 and volume > volSma
+longExit = ta.crossunder(fastEma, slowEma) or rsiVal > 78
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+
+if longExit
+    strategy.close("Long")
+`,
+    },
+
     mtf_bullish_trend_pullback: {
         id: 'mtf_bullish_trend_pullback',
         name: 'MTF Bullish Trend & EMA Pullback',
@@ -41,10 +76,11 @@ fastEma = ta.ema(close, 9)
 slowEma = ta.ema(close, 21)
 trendEma = ta.ema(close, 50)
 rsiVal = ta.rsi(close, 14)
+volSma = ta.sma(volume, 20)
 
 // Entry Conditions
-longCondition = htfBullish and ta.crossover(fastEma, slowEma) and close > trendEma and rsiVal > 50
-longExit = ta.crossunder(fastEma, slowEma) or rsiVal > 75
+longCondition = htfBullish and ta.crossover(fastEma, slowEma) and close > trendEma and rsiVal > 50 and volume > volSma * 0.9
+longExit = ta.crossunder(fastEma, slowEma) or rsiVal > 76
 
 if longCondition
     strategy.entry("Long", strategy.long)
@@ -88,38 +124,6 @@ if shortExit
 `,
     },
 
-    mtf_bollinger_mean_reversion: {
-        id: 'mtf_bollinger_mean_reversion',
-        name: 'MTF Bollinger Mean Reversion',
-        description: 'Mean-reversion strategy for ranging and choppy markets. Buys lower band bounces when RSI < 35 and sells upper band rejections when RSI > 65.',
-        bestMarketConditions: ['ranging_choppy', 'low_volatility_consolidation'],
-        recommendedTimeframe: '5m',
-        defaultTpPercent: 1.6,
-        defaultSlPercent: 0.8,
-        pineScript: `//@version=5
-strategy("MTF Bollinger Mean Reversion", overlay=true)
-
-bbLength = input.int(20, "BB Length")
-bbMult = input.float(2.0, "BB Multiplier")
-rsiLength = input.int(14, "RSI Length")
-
-[basis, upper, lower] = ta.bb(close, bbLength, bbMult)
-rsiVal = ta.rsi(close, rsiLength)
-
-// 15m HTF RSI for multi-timeframe divergence
-htfRsi = request.security(syminfo.tickerid, "15m", ta.rsi(close, 14))
-
-longCondition = ta.crossover(close, lower) and rsiVal < 38 and htfRsi < 45
-shortCondition = ta.crossunder(close, upper) and rsiVal > 62 and htfRsi > 55
-
-if longCondition
-    strategy.entry("Long", strategy.long)
-
-if shortCondition
-    strategy.entry("Short", strategy.short)
-`,
-    },
-
     mtf_volatility_squeeze_breakout: {
         id: 'mtf_volatility_squeeze_breakout',
         name: 'MTF Volatility Squeeze Breakout',
@@ -154,6 +158,38 @@ if shortCondition
 `,
     },
 
+    mtf_bollinger_mean_reversion: {
+        id: 'mtf_bollinger_mean_reversion',
+        name: 'MTF Bollinger Mean Reversion',
+        description: 'Mean-reversion strategy for ranging and choppy markets. Buys lower band bounces when RSI < 35 and sells upper band rejections when RSI > 65.',
+        bestMarketConditions: ['ranging_choppy', 'low_volatility_consolidation'],
+        recommendedTimeframe: '5m',
+        defaultTpPercent: 1.6,
+        defaultSlPercent: 0.8,
+        pineScript: `//@version=5
+strategy("MTF Bollinger Mean Reversion", overlay=true)
+
+bbLength = input.int(20, "BB Length")
+bbMult = input.float(2.0, "BB Multiplier")
+rsiLength = input.int(14, "RSI Length")
+
+[basis, upper, lower] = ta.bb(close, bbLength, bbMult)
+rsiVal = ta.rsi(close, rsiLength)
+
+// 15m HTF RSI for multi-timeframe divergence
+htfRsi = request.security(syminfo.tickerid, "15m", ta.rsi(close, 14))
+
+longCondition = ta.crossover(close, lower) and rsiVal < 38 and htfRsi < 45
+shortCondition = ta.crossunder(close, upper) and rsiVal > 62 and htfRsi > 55
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
+`,
+    },
+
     mtf_donchian_breakout_scalper: {
         id: 'mtf_donchian_breakout_scalper',
         name: 'MTF Donchian High-Momentum Breakout',
@@ -171,10 +207,10 @@ htfEma50 = request.security(syminfo.tickerid, "1h", ta.ema(close, 50))
 // 5m Donchian Channel
 dUpper = ta.highest(high, 20)
 dLower = ta.lowest(low, 20)
-fastEma = ta.ema(close, 9)
+volSma = ta.sma(volume, 20)
 
-longCondition = close > htfEma50 and ta.crossover(close, dUpper[1])
-shortCondition = close < htfEma50 and ta.crossunder(close, dLower[1])
+longCondition = close > htfEma50 and ta.crossover(close, dUpper[1]) and volume > volSma * 1.15
+shortCondition = close < htfEma50 and ta.crossunder(close, dLower[1]) and volume > volSma * 1.15
 
 if longCondition
     strategy.entry("Long", strategy.long)
