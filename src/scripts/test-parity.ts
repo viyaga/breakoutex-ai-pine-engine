@@ -82,7 +82,7 @@ async function runParityTestSuite() {
         LOT_SIZE: 1,
         PRICE_DECIMAL_PLACES: 2,
         BASE_URL: 'https://fapi.binance.com',
-        PINE_SCRIPT: STRATEGY_LIBRARY.mtf_supertrend_vwap_trend.pineScript,
+        PINE_SCRIPT: STRATEGY_LIBRARY.mtf_supertrend_vwap.pineScript,
         TIMEFRAME: '5m',
         TP_PERCENT: 2.5,
         SL_PERCENT: 1.0,
@@ -159,8 +159,9 @@ async function runParityTestSuite() {
 
     // ── TEST 3: Multi-Timeframe (MTF) Lookahead Prevention ────────
     console.log('\n3. Testing Multi-Timeframe Alignment (No Lookahead Leak)...');
-    const strat = STRATEGY_LIBRARY.mtf_ema_pullback_continuation;
+    const strat = STRATEGY_LIBRARY.mtf_trend_continuation;
     const signal1 = evaluatePineScript(strat.pineScript, candleMap, '5m');
+
 
     assert(
         signal1.action === 'buy' || signal1.action === 'sell' || signal1.action === 'none' || signal1.action === 'close',

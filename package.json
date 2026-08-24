@@ -6,7 +6,8 @@
         "build": "tsc",
         "dev": "tsx --watch src/server.ts",
         "start": "node dist/server.js",
-        "test:parity": "tsx src/scripts/test-parity.ts"
+        "test:parity": "tsx src/scripts/test-parity.ts",
+        "test:strategies": "tsx src/scripts/test-all-12-strategies.ts"
     },
     "keywords": [],
     "author": "",
