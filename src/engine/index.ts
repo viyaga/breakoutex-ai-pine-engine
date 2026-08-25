@@ -144,7 +144,7 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
 
     try {
         // AI Managed Bot: evaluate market regime directly via Gemini across 5m, 15m, 1h, and 4h
-        const isAiDue = !c.LAST_AI_EVALUATION || (!c.PINE_SCRIPT?.trim() && c.CURRENT_STRATEGY_ID !== 'stand_aside') || isAiEvaluationDue(c);
+        const isAiDue = isAiEvaluationDue(c) || (!c.PINE_SCRIPT?.trim() && c.CURRENT_STRATEGY_ID !== 'stand_aside');
         if (c.IS_AI_MANAGED && isAiDue) {
             try {
                 const [baseTfCandles, tf15mCandles, tf1hCandles, tf4hCandles] = await Promise.all([
@@ -167,6 +167,9 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
                 const evalMsg = `AI Market Evaluation failed: ${evalErr?.message ?? evalErr}`;
                 logger.error(evalMsg);
             }
+        } else if (c.IS_AI_MANAGED) {
+            const stratName = c.CURRENT_STRATEGY_NAME || c.CURRENT_STRATEGY_ID || 'Active Strategy';
+            logger.log(`[PineEngine][${botId}] 🤖 Active AI Strategy: "${stratName}" (Regime: ${c.MARKET_CONDITION || 'detected'})`);
         }
 
         if (!c.PINE_SCRIPT?.trim()) {

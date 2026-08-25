@@ -12,11 +12,8 @@ import util from 'util';
 
 const LOG_DIR = path.join(process.cwd(), 'logs');
 const HIGH_SCORE_LOG_DIR = path.join(LOG_DIR, 'high_scores');
-const AI_LOG_DIR = path.join(LOG_DIR, 'ai');
-const AI_EVALUATIONS_LOG = path.join(LOG_DIR, 'ai_evaluations.log');
 const MAX_LOG_FILES = 20;
 const MAX_HIGH_SCORE_LOG_FILES = 10;
-const MAX_AI_DAILY_LOG_FILES = 30;
 const FILE_PATTERN = /^cycle_\d{8}_\d{6}\.log$/; // matches cycle_YYYYMMDD_HHmmss.log
 
 let activeLogFile: string | null = null;
@@ -31,9 +28,6 @@ function ensureDirs(): void {
     }
     if (!fs.existsSync(HIGH_SCORE_LOG_DIR)) {
         fs.mkdirSync(HIGH_SCORE_LOG_DIR, { recursive: true });
-    }
-    if (!fs.existsSync(AI_LOG_DIR)) {
-        fs.mkdirSync(AI_LOG_DIR, { recursive: true });
     }
 }
 
@@ -284,6 +278,41 @@ export class BotCycleLogger {
         }
     }
 
+    logAiInteraction(data: {
+        model?: string;
+        systemPrompt?: string;
+        userPrompt: string;
+        rawResponse?: string;
+        parsedResponse?: any;
+        error?: string;
+        durationMs?: number;
+    }): void {
+        this.log(`\n${'='.repeat(70)}`);
+        this.log(`[PineEngine][${this.botId}] 🤖 AI MARKET EVALUATION (${this.symbol}) | Model: ${data.model || 'Gemini'} | Duration: ${data.durationMs ?? 0}ms`);
+        this.log('='.repeat(70));
+
+        if (data.systemPrompt) {
+            this.log(`--- [SYSTEM PROMPT] ---\n${data.systemPrompt.trim()}`);
+        }
+
+        this.log(`--- [AI INPUT (USER PROMPT)] ---\n${data.userPrompt.trim()}`);
+
+        if (data.rawResponse) {
+            this.log(`--- [AI RESPONSE (RAW)] ---\n${data.rawResponse.trim()}`);
+        }
+
+        if (data.parsedResponse) {
+            const parsedStr = typeof data.parsedResponse === 'string' ? data.parsedResponse : JSON.stringify(data.parsedResponse, null, 2);
+            this.log(`--- [AI PARSED DECISION] ---\n${parsedStr}`);
+        }
+
+        if (data.error) {
+            this.warn(`--- [AI ERROR] ---\n${data.error.trim()}`);
+        }
+
+        this.log(`${'='.repeat(70)}\n`);
+    }
+
     async finalize(finalScore?: number): Promise<void> {
         const duration = Date.now() - this.startTime;
         if (finalScore !== undefined) {
@@ -300,124 +329,4 @@ export class BotCycleLogger {
     }
 }
 
-export interface AiInteractionLogData {
-    botId?: string;
-    symbol?: string;
-    mode?: string;
-    model?: string;
-    systemPrompt?: string;
-    userPrompt: string;
-    rawResponse?: string;
-    parsedResponse?: any;
-    error?: string;
-    durationMs?: number;
-    regime?: string;
-}
-
-/**
- * Rotates daily AI evaluation log files to keep at most MAX_AI_DAILY_LOG_FILES (30).
- */
-function rotateAiDailyLogs(): void {
-    try {
-        if (!fs.existsSync(AI_LOG_DIR)) return;
-        const files = fs.readdirSync(AI_LOG_DIR).filter(f => f.startsWith('ai_eval_') && f.endsWith('.log'));
-        if (files.length <= MAX_AI_DAILY_LOG_FILES) return;
-
-        const sorted = files
-            .map(f => {
-                const p = path.join(AI_LOG_DIR, f);
-                try {
-                    return { name: f, path: p, time: fs.statSync(p).mtimeMs };
-                } catch {
-                    return null;
-                }
-            })
-            .filter((x): x is { name: string; path: string; time: number } => x !== null)
-            .sort((a, b) => a.time - b.time);
-
-        const deleteCount = sorted.length - MAX_AI_DAILY_LOG_FILES;
-        for (let i = 0; i < deleteCount; i++) {
-            try {
-                fs.unlinkSync(sorted[i].path);
-            } catch {
-                // ignore
-            }
-        }
-    } catch {
-        // ignore
-    }
-}
-
-/**
- * Logs full AI input (system instruction & user prompt) and AI response to dedicated log files:
- * 1. logs/ai_evaluations.log (running stream)
- * 2. logs/ai/ai_eval_YYYYMMDD.log (daily archive)
- */
-export function logAiInteractionToFile(data: AiInteractionLogData): void {
-    try {
-        ensureDirs();
-
-        const now = new Date();
-        const isoTime = now.toISOString();
-        const dateStr = isoTime.substring(0, 10).replace(/-/g, ''); // YYYYMMDD
-        const dailyFile = path.join(AI_LOG_DIR, `ai_eval_${dateStr}.log`);
-
-        const botInfo = data.botId ? `Bot: ${data.botId}` : '';
-        const symbolInfo = data.symbol ? `Symbol: ${data.symbol}` : '';
-        const modeInfo = data.mode ? `Mode: ${data.mode}` : '';
-        const modelInfo = data.model ? `Model: ${data.model}` : '';
-        const durInfo = data.durationMs !== undefined ? `Duration: ${data.durationMs}ms` : '';
-        const headerTags = [botInfo, symbolInfo, modeInfo, modelInfo, durInfo].filter(Boolean).join(' | ');
-
-        const lines: string[] = [];
-        lines.push('='.repeat(80));
-        lines.push(`[AI Interaction] ${isoTime} ${headerTags ? `| ${headerTags}` : ''}`);
-        lines.push('='.repeat(80));
-
-        if (data.systemPrompt) {
-            lines.push('--- [SYSTEM PROMPT] ---');
-            lines.push(data.systemPrompt.trim());
-        }
-
-        lines.push('--- [AI INPUT (USER PROMPT)] ---');
-        lines.push(data.userPrompt.trim());
-
-        if (data.rawResponse) {
-            lines.push('--- [AI RESPONSE (RAW)] ---');
-            lines.push(data.rawResponse.trim());
-        }
-
-        if (data.parsedResponse) {
-            lines.push('--- [AI PARSED DECISION] ---');
-            lines.push(typeof data.parsedResponse === 'string' ? data.parsedResponse : JSON.stringify(data.parsedResponse, null, 2));
-        }
-
-        if (data.error) {
-            lines.push('--- [AI ERROR / FALLBACK] ---');
-            lines.push(data.error.trim());
-        }
-
-        lines.push('='.repeat(80));
-        lines.push('\n');
-
-        const block = lines.join('\n');
-
-        // 1. Append to general AI evaluation log
-        fs.appendFileSync(AI_EVALUATIONS_LOG, block, 'utf-8');
-
-        // 2. Append to daily archive log
-        fs.appendFileSync(dailyFile, block, 'utf-8');
-        rotateAiDailyLogs();
-
-        // 3. Also write clean summary to active cycle log if active
-        writeToActiveLog(`[AI Log] Logged AI interaction for ${data.symbol || 'Bot'} to ${path.basename(AI_EVALUATIONS_LOG)} and ai/ai_eval_${dateStr}.log`);
-
-    } catch (err) {
-        if (originalError) {
-            originalError('Failed to write AI interaction log to file:', err);
-        } else {
-            console.error('Failed to write AI interaction log to file:', err);
-        }
-    }
-}
 

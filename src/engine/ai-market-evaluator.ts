@@ -6,7 +6,7 @@ import * as ind from '../pine/indicators';
 import { generateWithGemini } from '../ai/gemini-client';
 import { backtestAllStrategies, BacktestResult } from '../pine/backtester';
 import { normalizeTimeframe } from '../pine/interpreter';
-import { BotCycleLogger, logAiInteractionToFile } from '../utils/cycle-logger';
+import { BotCycleLogger } from '../utils/cycle-logger';
 
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
@@ -275,21 +275,18 @@ export function isAiEvaluationDue(
     const botCached = botEvaluationCache.get(bot.id);
     const now = Date.now();
 
-    // 1. Time-based check (6 hours max bot window)
-    let isTimeDue = true;
-    if (botCached && now - botCached.lastEvaluationTs < SIX_HOURS_MS) {
-        isTimeDue = false;
-    } else if (bot.LAST_AI_EVALUATION) {
-        const lastEvalTs = new Date(bot.LAST_AI_EVALUATION).getTime();
-        if (!isNaN(lastEvalTs) && now - lastEvalTs < SIX_HOURS_MS) {
-            isTimeDue = false;
-        }
+    // 1. If not yet evaluated in this engine session, trigger evaluation
+    if (!botCached) {
+        return true;
     }
 
-    if (isTimeDue) return true;
+    // 2. Time-based check (6 hours max bot window)
+    if (now - botCached.lastEvaluationTs >= SIX_HOURS_MS) {
+        return true;
+    }
 
-    // 2. Event-Driven Regime Shock Invalidation:
-    if (botCached && currentSnapshot) {
+    // 3. Event-Driven Regime Shock Invalidation:
+    if (currentSnapshot) {
         if (botCached.baselineAtr && currentSnapshot.atr > botCached.baselineAtr * 2.0) {
             console.log(`[AI MarketEvaluator][${bot.id}] ⚡ Regime Shock Trigger: Volatility surged (ATR ${currentSnapshot.atr} vs base ${botCached.baselineAtr})`);
             return true;
@@ -495,38 +492,32 @@ BT:${compactBt}`;
                     });
                 }
 
-                // Log full AI input and output to dedicated file (logs/ai_evaluations.log and logs/ai/)
-                logAiInteractionToFile({
-                    botId,
-                    symbol,
-                    mode: bot.MODE,
-                    model: env.geminiModel,
-                    systemPrompt,
-                    userPrompt,
-                    rawResponse: rawText,
-                    parsedResponse: aiResult || json,
-                    durationMs,
-                    regime: detectedRegime,
-                });
+                // Log full AI input, prompts, and response directly into the bot cycle logger
+                if (logger) {
+                    logger.logAiInteraction({
+                        model: env.geminiModel,
+                        systemPrompt,
+                        userPrompt,
+                        rawResponse: rawText,
+                        parsedResponse: aiResult || json,
+                        durationMs,
+                    });
+                }
 
             } catch (err: any) {
                 aiErrorMsg = err?.message ?? String(err);
                 console.warn(`[AI MarketEvaluator][${botId}] Direct Gemini evaluation failed (${aiErrorMsg}). Falling back to quant rules.`);
-                if (logger) logger.warn(`Direct Gemini evaluation failed (${aiErrorMsg}). Falling back to quant rules.`);
 
-                // Log error to file
-                logAiInteractionToFile({
-                    botId,
-                    symbol,
-                    mode: bot.MODE,
-                    model: env.geminiModel,
-                    systemPrompt,
-                    userPrompt,
-                    rawResponse: rawText || undefined,
-                    error: aiErrorMsg,
-                    durationMs: Date.now() - aiStartTime,
-                    regime: detectedRegime,
-                });
+                if (logger) {
+                    logger.logAiInteraction({
+                        model: env.geminiModel,
+                        systemPrompt,
+                        userPrompt,
+                        rawResponse: rawText || undefined,
+                        error: aiErrorMsg,
+                        durationMs: Date.now() - aiStartTime,
+                    });
+                }
             }
         } else {
             console.warn(`[AI MarketEvaluator][${botId}] GEMINI_API_KEY is not set. Using local quantitative rule engine.`);
