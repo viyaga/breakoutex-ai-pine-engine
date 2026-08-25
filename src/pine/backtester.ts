@@ -19,7 +19,7 @@ export interface BacktestResult {
     netPnlPercent: number;      // Total net return % (e.g. +4.8%)
     maxDrawdownPercent: number; // Max drawdown %
     expectancy: number;         // Average return per trade in %
-    status: 'profitable' | 'neutral' | 'losing';
+    status: 'profitable' | 'neutral' | 'losing' | 'no_triggers';
 }
 
 /**
@@ -46,7 +46,7 @@ export function backtestStrategy(
             netPnlPercent: 0,
             maxDrawdownPercent: 0,
             expectancy: 0,
-            status: 'neutral',
+            status: 'no_triggers',
         };
     }
 
@@ -178,8 +178,9 @@ export function backtestStrategy(
     const netPnlPercent = Number(runningPnl.toFixed(2));
     const expectancy = totalTrades > 0 ? Number((runningPnl / totalTrades).toFixed(2)) : 0;
 
-    let status: 'profitable' | 'neutral' | 'losing' = 'neutral';
-    if (netPnlPercent > 0.5 && profitFactor >= 1.2) status = 'profitable';
+    let status: 'profitable' | 'neutral' | 'losing' | 'no_triggers' = 'neutral';
+    if (totalTrades === 0) status = 'no_triggers';
+    else if (netPnlPercent > 0.5 && profitFactor >= 1.2) status = 'profitable';
     else if (netPnlPercent < -0.5 || profitFactor < 0.9) status = 'losing';
 
     return {
@@ -217,6 +218,11 @@ export function backtestAllStrategies(
         }
     }
 
-    // Sort by Net PnL desc, then Profit Factor desc
-    return results.sort((a, b) => b.netPnlPercent - a.netPnlPercent || b.profitFactor - a.profitFactor);
+    // Sort by Total Trades > 0, then Net PnL desc, then Profit Factor desc
+    return results.sort((a, b) => {
+        if (a.totalTrades > 0 && b.totalTrades === 0) return -1;
+        if (a.totalTrades === 0 && b.totalTrades > 0) return 1;
+        if (b.netPnlPercent !== a.netPnlPercent) return b.netPnlPercent - a.netPnlPercent;
+        return b.profitFactor - a.profitFactor;
+    });
 }

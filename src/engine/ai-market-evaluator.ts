@@ -387,7 +387,12 @@ export async function evaluateAndApplyAiStrategy(
                 : `${i + 1}.${r.strategyId}:Trades=0(NoTriggers)`
         ).join(' | ');
 
-        const btSummary = `[AI MarketEvaluator][${botId}] Detected Regime: "${detectedRegime}" | Gated Candidates: ${eligibleStrategies.length} | Top Strategy: "${backtestResults[0]?.strategyName}" (NetPnL: ${backtestResults[0]?.netPnlPercent}%, WR: ${backtestResults[0]?.winRate}%, PF: ${backtestResults[0]?.profitFactor})`;
+        const topBt = backtestResults[0];
+        const topBtSummary = topBt?.totalTrades > 0
+            ? `Top Strategy: "${topBt.strategyName}" (NetPnL: ${topBt.netPnlPercent > 0 ? '+' : ''}${topBt.netPnlPercent}%, WR: ${topBt.winRate}%, PF: ${topBt.profitFactor})`
+            : `Top Strategy by Regime: "${topBt?.strategyName}" (Recent Window: No trigger occurrences in chop)`;
+
+        const btSummary = `[AI MarketEvaluator][${botId}] Detected Regime: "${detectedRegime}" | Gated Candidates: ${eligibleStrategies.length} | ${topBtSummary}`;
         if (logger) logger.addLog(btSummary);
         console.log(btSummary);
 
@@ -396,7 +401,11 @@ export async function evaluateAndApplyAiStrategy(
         console.log(btHeader);
 
         backtestResults.forEach((r, idx) => {
-            const row = `  #${idx + 1} [${r.status.toUpperCase()}] ${r.strategyId.padEnd(28)} | WinRate: ${r.winRate.toFixed(1)}% | PF: ${r.profitFactor.toFixed(2)} | NetPnL: ${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent.toFixed(2)}% | Trades: ${r.totalTrades} (W:${r.wins}/L:${r.losses}) | Exp: ${r.expectancy}% | MaxDD: ${r.maxDrawdownPercent}%`;
+            const wrStr = r.totalTrades > 0 ? `${r.winRate.toFixed(1)}%` : 'N/A';
+            const pfStr = r.totalTrades > 0 ? r.profitFactor.toFixed(2) : 'N/A';
+            const pnlStr = r.totalTrades > 0 ? `${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent.toFixed(2)}%` : '0.00%';
+            const statusTag = r.totalTrades > 0 ? r.status.toUpperCase() : 'NO_TRIGGERS';
+            const row = `  #${idx + 1} [${statusTag.padEnd(12)}] ${r.strategyId.padEnd(28)} | Trades: ${r.totalTrades} (W:${r.wins}/L:${r.losses}) | WinRate: ${wrStr.padEnd(5)} | PF: ${pfStr.padEnd(4)} | NetPnL: ${pnlStr} | MaxDD: ${r.maxDrawdownPercent}%`;
             if (logger) logger.addLog(row);
             console.log(row);
         });
@@ -420,13 +429,15 @@ ${catalogSnippet}
 
 Rules:
 1. regime MUST be one of: ["trending_bullish","trending_bearish","ranging_choppy","high_volatility_breakout","low_volatility_consolidation"].
-2. strat MUST be a valid ID from the Gated Catalog. Prioritize strategies with positive backtest WR (>=50%) and PF (>=1.2).
+2. strat MUST be a valid ID from the Gated Catalog.
+   - If candidate strategies have positive backtest metrics (WR>=50%, PF>=1.2), prioritize them based on statistical edge.
+   - If all candidates have Trades=0 (no triggers in recent window), select the strategy with the best architectural fit for the current market regime and volatility structure (e.g. Volatility Squeeze or Range Expansion during compression). Do NOT claim empirical backtest edge when trades=0.
 3. tp/sl: Dynamic % calibrated to ATR ensuring (tp/sl) >= ${Math.max(1.0, bot.MIN_RR || 1.5)}.
-4. conf: "H"|"M"|"L", stand: true if market is unreadable/whipsaw.
-5. why: 1 concise sentence.
+4. conf: "H"|"M"|"L". When backtest has zero triggers, cap confidence at "M". Set stand: true if market is unreadable/whipsaw.
+5. why: 1 concise sentence explaining the regime and structural rationale.
 
 Output strict single-line JSON:
-{"regime":"${detectedRegime}","strat":"${eligibleStrategies[0].id}","tf":"5m","tp":2.5,"sl":1.0,"conf":"H","stand":false,"why":"Selected based on backtest edge and regime fit"}`;
+{"regime":"${detectedRegime}","strat":"${eligibleStrategies[0].id}","tf":"5m","tp":2.5,"sl":1.0,"conf":"M","stand":false,"why":"Selected based on regime fit and volatility structure"}`;
 
                 userPrompt = `PAIR:${symbol}|MODE:${bot.MODE.toUpperCase()}|MIN_RR:${bot.MIN_RR || 1.5}|REGIME:${detectedRegime}
 5M:P=$${snapshot.currentPrice}|24h=${snapshot.change24h}%|RSI=${snapshot.rsi}|EMA=${snapshot.emaTrend}|ADX=${snapshot.adx}(+DI:${snapshot.diPlus},-DI:${snapshot.diMinus})|ATR=${snapshot.atrPercent}%|BBW=${snapshot.bbWidth}(Sq:${snapshot.isBbSqueeze ? 1 : 0})|Vol=${snapshot.volumeRatio}x
@@ -656,11 +667,12 @@ BT:${compactBt}`;
     const selectMsg = `[AI MarketEvaluator][${botId}] ✓ AI Selected Strategy: "${selectedStrat.name}" [${selectedStrat.id}] | Regime: ${aiResult.marketCondition} | Next Eval: ${nextEval.toISOString()}`;
     const reasonMsg = `[AI MarketEvaluator][${botId}] Reasoning: ${aiResult.reasoning}`;
     if (logger) {
-        logger.addLog(selectMsg);
-        logger.addLog(reasonMsg);
+        logger.log(selectMsg);
+        logger.log(reasonMsg);
+    } else {
+        console.log(selectMsg);
+        console.log(reasonMsg);
     }
-    console.log(selectMsg);
-    console.log(reasonMsg);
 
     // Asynchronously sync strategy assignment back to Payload CMS for web and mobile dashboard
     syncAiEvaluationToPayload(botId, {
