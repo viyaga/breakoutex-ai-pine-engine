@@ -181,7 +181,7 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
         logger.log(`[PineEngine][${botId}] ── START ${c.SYMBOL} ${c.IS_AI_MANAGED ? '(AI Managed)' : ''} ──`);
 
         // 1. Sync leverage (non-blocking)
-        await syncLeverage(client, c);
+        await syncLeverage(client, c, logger);
 
         // 2. Identify all required timeframes (Multi-Timeframe support)
         const requiredTfs = extractRequestedTimeframes(c.PINE_SCRIPT, c.TIMEFRAME);

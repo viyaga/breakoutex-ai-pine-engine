@@ -1,57 +1,245 @@
 // ================================================================
-// Bot Cycle Logger & Auto-Rotation Utility
-// Stores complete lifecycle execution logs in log/general (max 20)
-// and high scoring signal executions in log/high_score (max 10)
+// Comprehensive Cycle Logger & High-Score Logger Utility
+// Matches BreakoutEx Bot Engine architecture:
+// 1. Logs each full cron cycle to logs/cycle_YYYYMMDD_HHmmss.log (max 20)
+// 2. Automatically promotes high-scoring executions to logs/high_scores/ (max 10)
+// 3. Captures all console logs, warnings, and errors seamlessly
 // ================================================================
 
 import fs from 'fs';
 import path from 'path';
+import util from 'util';
 
-const LOG_ROOT = path.resolve(process.cwd(), 'log');
-const GENERAL_LOG_DIR = path.join(LOG_ROOT, 'general');
-const HIGH_SCORE_LOG_DIR = path.join(LOG_ROOT, 'high_score');
+const LOG_DIR = path.join(process.cwd(), 'logs');
+const HIGH_SCORE_LOG_DIR = path.join(LOG_DIR, 'high_scores');
+const MAX_LOG_FILES = 20;
+const MAX_HIGH_SCORE_LOG_FILES = 10;
+const FILE_PATTERN = /^cycle_\d{8}_\d{6}\.log$/; // matches cycle_YYYYMMDD_HHmmss.log
 
-const MAX_GENERAL_FILES = 20;
-const MAX_HIGH_SCORE_FILES = 10;
+let activeLogFile: string | null = null;
+let originalLog: typeof console.log | null = null;
+let originalError: typeof console.error | null = null;
+let originalWarn: typeof console.warn | null = null;
 
 /** Ensure log directories exist */
 function ensureDirs(): void {
-    if (!fs.existsSync(GENERAL_LOG_DIR)) {
-        fs.mkdirSync(GENERAL_LOG_DIR, { recursive: true });
+    if (!fs.existsSync(LOG_DIR)) {
+        fs.mkdirSync(LOG_DIR, { recursive: true });
     }
     if (!fs.existsSync(HIGH_SCORE_LOG_DIR)) {
         fs.mkdirSync(HIGH_SCORE_LOG_DIR, { recursive: true });
     }
 }
 
-/** Keep only the newest maxFiles in a directory */
-function rotateFiles(dir: string, maxFiles: number): void {
+/**
+ * Starts global cycle logging by creating a log file for the current cycle and intercepting console output.
+ */
+export function startCycleLogging(): void {
     try {
-        if (!fs.existsSync(dir)) return;
-        const files = fs.readdirSync(dir)
-            .map(name => {
-                const fullPath = path.join(dir, name);
-                const stat = fs.statSync(fullPath);
-                return { name, fullPath, mtime: stat.mtimeMs };
-            })
-            .filter(f => !fs.statSync(f.fullPath).isDirectory())
-            .sort((a, b) => b.mtime - a.mtime); // newest first
+        ensureDirs();
+        rotateLogs();
 
-        if (files.length > maxFiles) {
-            const toDelete = files.slice(maxFiles);
-            for (const f of toDelete) {
-                try {
-                    fs.unlinkSync(f.fullPath);
-                } catch {
-                    // Ignore deletion failure
-                }
-            }
+        const now = new Date();
+        const year = now.getUTCFullYear();
+        const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(now.getUTCDate()).padStart(2, '0');
+        const hours = String(now.getUTCHours()).padStart(2, '0');
+        const minutes = String(now.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(now.getUTCSeconds()).padStart(2, '0');
+
+        const dateStr = `${year}${month}${day}_${hours}${minutes}${seconds}`;
+        activeLogFile = path.join(LOG_DIR, `cycle_${dateStr}.log`);
+
+        if (!originalLog) {
+            originalLog = console.log;
+            originalError = console.error;
+            originalWarn = console.warn;
+
+            console.log = (...args: any[]) => {
+                originalLog!(...args);
+                writeToActiveLog(util.format(...args));
+            };
+
+            console.error = (...args: any[]) => {
+                originalError!(...args);
+                writeToActiveLog(util.format(...args));
+            };
+
+            console.warn = (...args: any[]) => {
+                originalWarn!(...args);
+                writeToActiveLog(util.format(...args));
+            };
         }
-    } catch (err: any) {
-        console.warn(`[CycleLogger] File rotation warning in ${dir}:`, err?.message ?? err);
+    } catch (err) {
+        if (originalError) {
+            originalError('Failed to start cycle logging:', err);
+        } else {
+            console.error('Failed to start cycle logging:', err);
+        }
     }
 }
 
+/**
+ * Ends cycle logging by resetting the active file and restoring original console functions.
+ */
+export function endCycleLogging(): void {
+    activeLogFile = null;
+    if (originalLog) {
+        console.log = originalLog;
+        console.error = originalError!;
+        console.warn = originalWarn!;
+        originalLog = null;
+        originalError = null;
+        originalWarn = null;
+    }
+}
+
+/**
+ * Appends text content to the active log file, ensuring no ANSI colors are written.
+ */
+function writeToActiveLog(text: string): void {
+    if (activeLogFile) {
+        try {
+            const cleanText = text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
+            fs.appendFileSync(activeLogFile, cleanText + '\n');
+        } catch (err) {
+            if (originalError) {
+                originalError('Failed to write to cycle log:', err);
+            }
+        }
+    }
+}
+
+/**
+ * Rotates log files in HIGH_SCORE_LOG_DIR to retain at most MAX_HIGH_SCORE_LOG_FILES (10).
+ */
+export function rotateHighScoreLogs(): void {
+    try {
+        if (!fs.existsSync(HIGH_SCORE_LOG_DIR)) return;
+
+        const files = fs.readdirSync(HIGH_SCORE_LOG_DIR);
+        const logFiles = files
+            .map(f => {
+                const filePath = path.join(HIGH_SCORE_LOG_DIR, f);
+                let time = 0;
+                try {
+                    const stat = fs.statSync(filePath);
+                    if (!stat.isFile()) return null;
+                    time = stat.mtimeMs;
+                } catch {
+                    return null;
+                }
+                return { name: f, path: filePath, time };
+            })
+            .filter((item): item is { name: string; path: string; time: number } => item !== null)
+            .sort((a, b) => a.time - b.time); // Oldest first
+
+        if (logFiles.length > MAX_HIGH_SCORE_LOG_FILES) {
+            const deleteCount = logFiles.length - MAX_HIGH_SCORE_LOG_FILES;
+            for (let i = 0; i < deleteCount; i++) {
+                try {
+                    fs.unlinkSync(logFiles[i].path);
+                } catch (unlinkErr) {
+                    if (originalError) {
+                        originalError(`Failed to delete old high score log file ${logFiles[i].name}:`, unlinkErr);
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        if (originalError) {
+            originalError('Error rotating high score logs:', err);
+        }
+    }
+}
+
+/**
+ * Copies the current active normal cycle log file into the high score logs directory.
+ */
+export function promoteCurrentCycleToHighScore(details?: { symbol?: string; score?: number }): string | null {
+    try {
+        if (!activeLogFile || !fs.existsSync(activeLogFile)) {
+            return null;
+        }
+
+        ensureDirs();
+
+        const basename = path.basename(activeLogFile, '.log');
+        const symbolTag = details?.symbol ? `_${details.symbol.replace(/[^a-zA-Z0-9]/g, '')}` : '';
+        const scoreTag = details?.score !== undefined ? `_score${Math.round(details.score)}` : '';
+
+        const destFileName = `high_score_${basename}${symbolTag}${scoreTag}.log`;
+        const destPath = path.join(HIGH_SCORE_LOG_DIR, destFileName);
+
+        fs.copyFileSync(activeLogFile, destPath);
+        rotateHighScoreLogs();
+
+        return destPath;
+    } catch (err) {
+        if (originalError) {
+            originalError('Failed to promote cycle log to high score directory:', err);
+        }
+        return null;
+    }
+}
+
+/**
+ * Retains only the most recent (MAX_LOG_FILES - 1) log files in logs/.
+ */
+function rotateLogs(): void {
+    try {
+        if (!fs.existsSync(LOG_DIR)) return;
+        const files = fs.readdirSync(LOG_DIR);
+        const logFiles = files
+            .filter(f => FILE_PATTERN.test(f))
+            .map(f => {
+                const filePath = path.join(LOG_DIR, f);
+                let time = 0;
+                try {
+                    time = fs.statSync(filePath).mtimeMs;
+                } catch {
+                    const match = f.match(/cycle_(\d{8})_(\d{6})\.log/);
+                    if (match) {
+                        const dateStr = match[1];
+                        const timeStr = match[2];
+                        const year = parseInt(dateStr.substring(0, 4), 10);
+                        const month = parseInt(dateStr.substring(4, 6), 10) - 1;
+                        const day = parseInt(dateStr.substring(6, 8), 10);
+                        const hour = parseInt(timeStr.substring(0, 2), 10);
+                        const min = parseInt(timeStr.substring(2, 4), 10);
+                        const sec = parseInt(timeStr.substring(4, 6), 10);
+                        time = Date.UTC(year, month, day, hour, min, sec);
+                    }
+                }
+                return { name: f, path: filePath, time };
+            })
+            .sort((a, b) => a.time - b.time); // Oldest first
+
+        const keepCount = MAX_LOG_FILES - 1;
+        if (logFiles.length > keepCount) {
+            const deleteCount = logFiles.length - keepCount;
+            for (let i = 0; i < deleteCount; i++) {
+                try {
+                    fs.unlinkSync(logFiles[i].path);
+                } catch (unlinkErr) {
+                    if (originalError) {
+                        originalError(`Failed to delete old log file ${logFiles[i].name}:`, unlinkErr);
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        if (originalError) {
+            originalError('Error rotating logs:', err);
+        } else {
+            console.error('Error rotating logs:', err);
+        }
+    }
+}
+
+/**
+ * Per-bot cycle log aggregator and trace logger
+ */
 export class BotCycleLogger {
     private logs: string[] = [];
     private startTime: number = Date.now();
@@ -99,27 +287,9 @@ export class BotCycleLogger {
         const scoreText = this.score !== undefined ? `Score=${this.score}` : 'Score=N/A';
         this.addLog(`=== [PineEngine] BOT CYCLE END: ${this.symbol} (${duration}ms) | ${scoreText} ===\n`);
 
-        const fileContent = this.logs.join('\n');
-        const nowIso = new Date().toISOString().replace(/[:.]/g, '-');
-        const scorePrefix = this.score !== undefined ? `_score${Math.round(this.score)}` : '';
-        const fileName = `${nowIso}_${this.symbol}_${this.botId}${scorePrefix}.log`;
-
-        try {
-            ensureDirs();
-
-            // 1. Write to log/general (max 20 files)
-            const generalPath = path.join(GENERAL_LOG_DIR, fileName);
-            fs.writeFileSync(generalPath, fileContent, 'utf-8');
-            rotateFiles(GENERAL_LOG_DIR, MAX_GENERAL_FILES);
-
-            // 2. If score was more than 60, also write to log/high_score (max 10 files)
-            if (this.score !== undefined && this.score > 60) {
-                const highScorePath = path.join(HIGH_SCORE_LOG_DIR, fileName);
-                fs.writeFileSync(highScorePath, fileContent, 'utf-8');
-                rotateFiles(HIGH_SCORE_LOG_DIR, MAX_HIGH_SCORE_FILES);
-            }
-        } catch (err: any) {
-            console.warn(`[CycleLogger] Failed to write cycle log:`, err?.message ?? err);
+        // If score was high (>= 60), promote the active cycle log to high_scores
+        if (this.score !== undefined && this.score >= 60) {
+            promoteCurrentCycleToHighScore({ symbol: this.symbol, score: this.score });
         }
     }
 }

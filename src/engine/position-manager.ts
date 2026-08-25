@@ -11,13 +11,22 @@ function log(botId: string, msg: string) {
     console.log(`[PineEngine][${botId}] ${msg}`);
 }
 
-/** Sync leverage on the exchange, silently handles errors */
-export async function syncLeverage(client: IExchangeClient, c: PineBotConfig): Promise<void> {
+/** Sync leverage on the exchange, safely handles errors */
+export async function syncLeverage(
+    client: IExchangeClient,
+    c: PineBotConfig,
+    logger?: { addLog: (msg: string) => void; warn: (msg: string) => void }
+): Promise<void> {
     try {
         const prodIdentifier = c.PRODUCT_ID || c.SYMBOL;
         await client.setLeverage(prodIdentifier, c.LEVERAGE, c.SYMBOL);
+        const msg = `[LeverageSync] ✓ Successfully verified & synced ${c.LEVERAGE}x leverage for ${c.SYMBOL}`;
+        if (logger) logger.addLog(msg);
+        log(c.id, msg);
     } catch (err: any) {
-        console.warn(`[PineEngine][${c.id}] Leverage sync failed (non-fatal): ${err.message}`);
+        const warnMsg = `[LeverageSync] Leverage sync notice (non-fatal): ${err.message}`;
+        if (logger) logger.warn(warnMsg);
+        else console.warn(`[PineEngine][${c.id}] ${warnMsg}`);
     }
 }
 

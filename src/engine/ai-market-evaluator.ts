@@ -388,7 +388,19 @@ export async function evaluateAndApplyAiStrategy(
             `${i + 1}.${r.strategyId}:WR=${r.winRate}%,PF=${r.profitFactor},PnL=${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent}%`
         ).join(' | ');
 
-        console.log(`[AI MarketEvaluator][${botId}] Detected Regime: "${detectedRegime}" | Gated Candidates: ${eligibleStrategies.length} | Top BT: "${backtestResults[0]?.strategyName}" (NetPnL: ${backtestResults[0]?.netPnlPercent}%, WR: ${backtestResults[0]?.winRate}%)`);
+        const btSummary = `[AI MarketEvaluator][${botId}] Detected Regime: "${detectedRegime}" | Gated Candidates: ${eligibleStrategies.length} | Top Strategy: "${backtestResults[0]?.strategyName}" (NetPnL: ${backtestResults[0]?.netPnlPercent}%, WR: ${backtestResults[0]?.winRate}%, PF: ${backtestResults[0]?.profitFactor})`;
+        if (logger) logger.addLog(btSummary);
+        console.log(btSummary);
+
+        const btHeader = `[AI MarketEvaluator][${botId}] 📊 Live Backtest Simulation (${eligibleStrategies.length} candidates on ${symbol}):`;
+        if (logger) logger.addLog(btHeader);
+        console.log(btHeader);
+
+        backtestResults.forEach((r, idx) => {
+            const row = `  #${idx + 1} [${r.status.toUpperCase()}] ${r.strategyId.padEnd(28)} | WinRate: ${r.winRate.toFixed(1)}% | PF: ${r.profitFactor.toFixed(2)} | NetPnL: ${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent.toFixed(2)}% | Trades: ${r.totalTrades} (W:${r.wins}/L:${r.losses}) | Exp: ${r.expectancy}% | MaxDD: ${r.maxDrawdownPercent}%`;
+            if (logger) logger.addLog(row);
+            console.log(row);
+        });
 
         // Direct Gemini API call with regime-gated candidates
         if (env.geminiApiKey) {

@@ -7,9 +7,11 @@ import cron from 'node-cron';
 import env from '../config/env';
 import { fetchActivePineBots } from '../engine/config-fetcher';
 import { runPineCycle, clearCycleCache } from '../engine/index';
+import { startCycleLogging, endCycleLogging } from '../utils/cycle-logger';
 
 export function startCronJob(): void {
     cron.schedule(env.cronSchedule, async () => {
+        startCycleLogging();
         const cycleStart = Date.now();
         console.log(`\n${'─'.repeat(60)}`);
         console.log(`[Cron] ▶ CYCLE START  ${new Date().toISOString()}`);
@@ -53,6 +55,7 @@ export function startCronJob(): void {
             console.log(`${'─'.repeat(60)}`);
             console.log(`[Cron] ■ CYCLE DONE  ✓${succeeded} ✗${failed}  ${ms}ms | Heap: ${memUsed}MB / ${memTotal}MB`);
             console.log(`${'─'.repeat(60)}\n`);
+            endCycleLogging();
         }
     });
 
