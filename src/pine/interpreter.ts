@@ -74,10 +74,12 @@ export interface DataSufficiencyRequirement {
  */
 export function analyzeDataSufficiency(
     script: string,
-    baseTimeframe = '5m'
-): DataSufficiencyRequirement {
+    baseTimeframe = '5m',
+    candleMap?: Map<string, Candle[]> | Record<string, any[]>,
+    baseCandlesCount?: number
+): DataSufficiencyRequirement & { isSufficient: boolean } {
     const baseMinutes = parseTimeframeToMinutes(baseTimeframe);
-    const indicators: { timeframe: string; indicator: string; period: number; requiredBaseBars: number }[] = [];
+    const indicators: { timeframe: string; indicator: string; period: number; requiredBaseBars: number; hasDirectHTF: boolean; directHTFOk: boolean }[] = [];
 
     // 1. Scan for request.security calls (supporting multiline arguments)
     const secRegex = /request\.security\s*\(\s*[\s\S]*?,\s*["']([^"']+)["']\s*,\s*([\s\S]*?)(?:,\s*(?:lookahead|gaps|\w+)\s*=|\))/g;
@@ -102,13 +104,22 @@ export function analyzeDataSufficiency(
             }
         }
 
-        const requiredBaseBars = Math.ceil(period * ratio) + 10;
+        const normTf = normalizeTimeframe(tf);
+        const explicitHtf = candleMap instanceof Map
+            ? candleMap.get(normTf)
+            : (candleMap as any)?.[normTf] || (candleMap as any)?.[tf];
+        const hasDirectHTF = Boolean(explicitHtf && explicitHtf.length > 0);
+        const directHTFOk = hasDirectHTF && (explicitHtf!.length >= period + 5);
+
+        const requiredBaseBars = hasDirectHTF ? period + 10 : Math.ceil(period * ratio) + 10;
 
         indicators.push({
             timeframe: tf,
             indicator: rawExpr.replace(/\s+/g, ' '),
             period,
             requiredBaseBars,
+            hasDirectHTF,
+            directHTFOk,
         });
     }
 
@@ -122,24 +133,37 @@ export function analyzeDataSufficiency(
             indicator: `ta.${indName}(${period})`,
             period,
             requiredBaseBars: period + 10,
+            hasDirectHTF: false,
+            directHTFOk: false,
         });
     }
 
     let maxRequired = 50; // baseline minimum
     let limiting = 'Baseline strategy warmup';
+    let allDirectOk = true;
 
     for (const ind of indicators) {
+        if (ind.hasDirectHTF && !ind.directHTFOk) {
+            allDirectOk = false;
+            limiting = `Explicit ${ind.timeframe} feed has insufficient bars for ${ind.indicator} (requires ${ind.period + 5} bars)`;
+        }
         if (ind.requiredBaseBars > maxRequired) {
             maxRequired = ind.requiredBaseBars;
             limiting = `${ind.timeframe} ${ind.indicator} (requires ${ind.period} ${ind.timeframe} bars = ${ind.requiredBaseBars.toLocaleString()} base bars)`;
         }
     }
 
+    const hasExplicitHtf = indicators.some((ind) => ind.hasDirectHTF);
+    const isSufficient = hasExplicitHtf
+        ? allDirectOk && (baseCandlesCount === undefined || baseCandlesCount >= 30)
+        : baseCandlesCount === undefined || baseCandlesCount >= maxRequired;
+
     return {
         requiredBaseCandles: maxRequired,
         requiredDays: Number(((maxRequired * baseMinutes) / 1440).toFixed(1)),
         limitingFactor: limiting,
         indicatorsDetected: indicators,
+        isSufficient,
     };
 }
 

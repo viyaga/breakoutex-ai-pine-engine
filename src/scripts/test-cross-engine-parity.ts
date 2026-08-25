@@ -55,6 +55,15 @@ async function runParityComparison(symbol = 'ETHUSDT', limit = 1000) {
         volume: c.volume,
     }));
 
+    const htfCandlesMap: Record<string, PineCandle[]> = {
+        '15': candles15m.map(c => ({ time: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume })),
+        '15m': candles15m.map(c => ({ time: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume })),
+        '60': candles1h.map(c => ({ time: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume })),
+        '1h': candles1h.map(c => ({ time: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume })),
+        '240': candles4h.map(c => ({ time: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume })),
+        '4h': candles4h.map(c => ({ time: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume })),
+    };
+
     const mobileRunner = new PineV6BacktestRunner();
 
     console.log(`\nExecuting Dual Engine Simulation across Core Strategy Families...\n`);
@@ -137,6 +146,7 @@ async function runParityComparison(symbol = 'ETHUSDT', limit = 1000) {
                 slippageTicks: 1,
                 tickSize: 0.1,
                 pyramiding: 1,
+                htfCandlesMap,
             });
         } catch (err: any) {
             mobileError = err.message;

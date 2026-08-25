@@ -152,8 +152,8 @@ export function backtestStrategy(
     const exitSlip = options.exitSlippagePct ?? 0.0003;    // 0.03% slippage
     const processOnClose = options.processOrdersOnClose ?? false;
 
-    const sufficiency = analyzeDataSufficiency(strategy.pineScript, baseTimeframe);
-    if (!allBaseCandles || allBaseCandles.length < sufficiency.requiredBaseCandles) {
+    const sufficiency = analyzeDataSufficiency(strategy.pineScript, baseTimeframe, candleMap, allBaseCandles?.length);
+    if (!sufficiency.isSufficient) {
         throw new Error(
             `[INSUFFICIENT_HISTORICAL_DATA] Cannot backtest strategy "${strategy.name}". ` +
             `Required: ${sufficiency.requiredBaseCandles.toLocaleString()} base candles (${sufficiency.requiredDays} days) to warm up ${sufficiency.limitingFactor}, ` +
