@@ -98,8 +98,13 @@ export interface AiMarketEvaluationResponse {
     standAside?: boolean;
 }
 
-/** Comprehensive Quantitative Snapshot calculation */
-export function computeMarketSnapshot(candles: Candle[], htf1hCandles?: Candle[]) {
+/** Comprehensive Quantitative Snapshot calculation across 5m, 15m, 1h, and 4h */
+export function computeMarketSnapshot(
+    candles: Candle[],
+    tf15mCandles?: Candle[],
+    tf1hCandles?: Candle[],
+    tf4hCandles?: Candle[]
+) {
     if (!candles || candles.length < 20) {
         return {
             currentPrice: candles?.[candles.length - 1]?.close ?? 0,
@@ -109,13 +114,18 @@ export function computeMarketSnapshot(candles: Candle[], htf1hCandles?: Candle[]
             atr: 0,
             atrPercent: 0,
             adx: 20,
+            diPlus: 0,
+            diMinus: 0,
             trendStrength: 'ranging_chop' as const,
             bbWidth: 0.02,
             isBbSqueeze: false,
             volumeRatio: 1.0,
             volatilityLevel: 'medium' as const,
+            htf15mTrend: 'neutral' as const,
+            htf15mRsi: 50,
             htf1hTrend: 'neutral' as const,
             htf1hRsi: 50,
+            htf4hTrend: 'neutral' as const,
         };
     }
 
@@ -178,13 +188,28 @@ export function computeMarketSnapshot(candles: Candle[], htf1hCandles?: Candle[]
     const avgVol = volSma[n - 1] || currentVol;
     const volumeRatio = Number((currentVol / Math.max(1, avgVol)).toFixed(2));
 
-    // 8. Higher Timeframe Context (1h)
+    // 8. 15M Setup Context
+    let htf15mTrend: 'bullish' | 'bearish' | 'neutral' = 'neutral';
+    let htf15mRsi = 50;
+    if (tf15mCandles && tf15mCandles.length >= 20) {
+        const m15N = tf15mCandles.length;
+        const m15Closes = tf15mCandles.map(c => c.close);
+        const m15Ema20 = ind.ema(m15Closes, Math.min(20, m15N));
+        const m15Ema50 = ind.ema(m15Closes, Math.min(50, m15N));
+        const lastM15Ema20 = m15Ema20[m15N - 1] || m15Closes[m15N - 1];
+        const lastM15Ema50 = m15Ema50[m15N - 1] || m15Closes[m15N - 1];
+
+        htf15mTrend = lastM15Ema20 > lastM15Ema50 * 1.001 ? 'bullish' : lastM15Ema20 < lastM15Ema50 * 0.999 ? 'bearish' : 'neutral';
+        const m15RsiSeries = ind.rsi(m15Closes, 14);
+        htf15mRsi = Number((m15RsiSeries[m15N - 1] || 50).toFixed(1));
+    }
+
+    // 9. 1H Trend Context
     let htf1hTrend: 'bullish' | 'bearish' | 'neutral' = 'neutral';
     let htf1hRsi = 50;
-
-    if (htf1hCandles && htf1hCandles.length >= 20) {
-        const htfN = htf1hCandles.length;
-        const htfCloses = htf1hCandles.map(c => c.close);
+    if (tf1hCandles && tf1hCandles.length >= 20) {
+        const htfN = tf1hCandles.length;
+        const htfCloses = tf1hCandles.map(c => c.close);
         const htfEma50 = ind.ema(htfCloses, Math.min(50, htfN));
         const lastHtfClose = htfCloses[htfN - 1];
         const lastHtfEma50 = htfEma50[htfN - 1] || lastHtfClose;
@@ -192,6 +217,19 @@ export function computeMarketSnapshot(candles: Candle[], htf1hCandles?: Candle[]
         htf1hTrend = lastHtfClose > lastHtfEma50 * 1.002 ? 'bullish' : lastHtfClose < lastHtfEma50 * 0.998 ? 'bearish' : 'neutral';
         const htfRsiSeries = ind.rsi(htfCloses, 14);
         htf1hRsi = Number((htfRsiSeries[htfN - 1] || 50).toFixed(1));
+    }
+
+    // 10. 4H Macro Context
+    let htf4hTrend: 'bullish' | 'bearish' | 'neutral' = 'neutral';
+    if (tf4hCandles && tf4hCandles.length >= 20) {
+        const h4N = tf4hCandles.length;
+        const h4Closes = tf4hCandles.map(c => c.close);
+        const h4Ema50 = ind.ema(h4Closes, Math.min(50, h4N));
+        const h4Ema200 = ind.ema(h4Closes, Math.min(200, h4N));
+        const lastH4Ema50 = h4Ema50[h4N - 1] || h4Closes[h4N - 1];
+        const lastH4Ema200 = h4Ema200[h4N - 1] || h4Closes[h4N - 1];
+
+        htf4hTrend = lastH4Ema50 > lastH4Ema200 * 1.002 ? 'bullish' : lastH4Ema50 < lastH4Ema200 * 0.998 ? 'bearish' : 'neutral';
     }
 
     return {
@@ -209,8 +247,11 @@ export function computeMarketSnapshot(candles: Candle[], htf1hCandles?: Candle[]
         bbWidth: lastBbWidth,
         isBbSqueeze,
         volumeRatio,
+        htf15mTrend,
+        htf15mRsi,
         htf1hTrend,
         htf1hRsi,
+        htf4hTrend,
     };
 }
 
@@ -265,13 +306,15 @@ export function isAiEvaluationDue(
 export async function evaluateAndApplyAiStrategy(
     bot: PineBotConfig,
     candles: Candle[],
-    htfCandles?: Candle[]
+    tf15mCandles?: Candle[],
+    tf1hCandles?: Candle[],
+    tf4hCandles?: Candle[]
 ): Promise<void> {
     const botId = bot.id;
     const symbol = bot.SYMBOL;
     const baseTf = bot.TIMEFRAME || '5m';
 
-    const snapshot = computeMarketSnapshot(candles, htfCandles);
+    const snapshot = computeMarketSnapshot(candles, tf15mCandles, tf1hCandles, tf4hCandles);
     const cacheKey = getRegimeCacheKey(symbol, baseTf, bot.MODE);
     const cachedGlobal = globalRegimeCache.get(cacheKey);
 
@@ -316,11 +359,20 @@ export async function evaluateAndApplyAiStrategy(
             eligibleStrategies = Object.values(STRATEGY_LIBRARY);
         }
 
-        // 3. Run live in-memory backtest simulation on eligible candidate strategies
+        // 3. Run live in-memory backtest simulation on eligible candidate strategies with full MTF candle map
         const candleMap = new Map<string, Candle[]>();
         candleMap.set(normalizeTimeframe(baseTf), candles);
-        if (htfCandles && htfCandles.length) {
-            candleMap.set('1h', htfCandles);
+        if (tf15mCandles && tf15mCandles.length) {
+            candleMap.set('15m', tf15mCandles);
+            candleMap.set('15', tf15mCandles);
+        }
+        if (tf1hCandles && tf1hCandles.length) {
+            candleMap.set('1h', tf1hCandles);
+            candleMap.set('60', tf1hCandles);
+        }
+        if (tf4hCandles && tf4hCandles.length) {
+            candleMap.set('4h', tf4hCandles);
+            candleMap.set('240', tf4hCandles);
         }
 
         backtestResults = backtestAllStrategies(eligibleStrategies, candleMap, baseTf);
@@ -353,7 +405,9 @@ Output strict single-line JSON:
 
                 const userPrompt = `PAIR:${symbol}|MODE:${bot.MODE.toUpperCase()}|MIN_RR:${bot.MIN_RR || 1.5}|REGIME:${detectedRegime}
 5M:P=$${snapshot.currentPrice}|24h=${snapshot.change24h}%|RSI=${snapshot.rsi}|EMA=${snapshot.emaTrend}|ADX=${snapshot.adx}(+DI:${snapshot.diPlus},-DI:${snapshot.diMinus})|ATR=${snapshot.atrPercent}%|BBW=${snapshot.bbWidth}(Sq:${snapshot.isBbSqueeze ? 1 : 0})|Vol=${snapshot.volumeRatio}x
+15M:Trend=${snapshot.htf15mTrend}|RSI=${snapshot.htf15mRsi}
 1H:Trend=${snapshot.htf1hTrend}|RSI=${snapshot.htf1hRsi}
+4H:MacroTrend=${snapshot.htf4hTrend}
 BT:${compactBt}`;
 
                 const rawText = await generateWithGemini({

@@ -13,9 +13,44 @@ import { executeTrade } from './trade-executor';
 import { Candle } from '../config/types';
 import { isAiEvaluationDue, evaluateAndApplyAiStrategy } from './ai-market-evaluator';
 
-// Per-cycle candle cache (cleared at start of each cron cycle)
-const cycleCache = new Map<string, Candle[]>();
-export function clearCycleCache() { cycleCache.clear(); }
+// Multi-Timeframe TTL Smart Candle Cache across all bots and cycles
+interface CandleCacheEntry {
+    candles: Candle[];
+    cachedAt: number;
+    ttlMs: number;
+}
+
+const smartCandleCache = new Map<string, CandleCacheEntry>();
+const pendingFetches = new Map<string, Promise<Candle[] | null>>();
+
+function getTtlForTimeframe(normTf: string): number {
+    switch (normTf) {
+        case '1m': return 25 * 1000;       // 25s
+        case '3m': return 60 * 1000;       // 1m
+        case '5m': return 50 * 1000;       // 50s (protects across cycle iterations)
+        case '15m': return 3 * 60 * 1000;   // 3m (15m candle doesn't change closed bars for 15m)
+        case '30m': return 5 * 60 * 1000;   // 5m
+        case '1h':
+        case '60': return 10 * 60 * 1000;  // 10m (1h candle doesn't change closed bars for 60m)
+        case '2h':
+        case '120': return 20 * 60 * 1000; // 20m
+        case '4h':
+        case '240': return 30 * 60 * 1000; // 30m (4h candle only closes every 4 hours)
+        case '1d':
+        case 'D': return 60 * 60 * 1000;   // 1 hour
+        default: return 60 * 1000;
+    }
+}
+
+export function clearCycleCache() {
+    // Clean up expired cache entries while keeping valid higher timeframe data intact
+    const now = Date.now();
+    for (const [key, entry] of smartCandleCache.entries()) {
+        if (now - entry.cachedAt >= entry.ttlMs) {
+            smartCandleCache.delete(key);
+        }
+    }
+}
 
 async function fetchTimeframeCandles(
     client: IExchangeClient,
@@ -23,21 +58,46 @@ async function fetchTimeframeCandles(
     timeframe: string
 ): Promise<Candle[] | null> {
     const normTf = normalizeTimeframe(timeframe);
-    const key = `${symbol}:${normTf}`;
-    if (cycleCache.has(key)) return cycleCache.get(key)!;
+    const key = `${symbol.toUpperCase().trim()}:${normTf}`;
+    const now = Date.now();
 
-    const candles = await client.getCandles(symbol, normTf, 350);
-    if (!candles || !candles.length) return null;
+    // 1. Check TTL Cache (Zero exchange API calls if valid)
+    const cached = smartCandleCache.get(key);
+    if (cached && now - cached.cachedAt < cached.ttlMs) {
+        return cached.candles;
+    }
 
-    // Only use closed candles
-    const dur     = resolutionMs(normTf);
-    const now     = Date.now();
-    const current = Math.floor(now / dur) * dur;
-    const closed  = candles.filter(c => c.timestamp < current);
-    if (!closed.length) return null;
+    // 2. Check In-Flight Request (deduplicate simultaneous requests from multiple bots on same symbol/TF)
+    if (pendingFetches.has(key)) {
+        return pendingFetches.get(key)!;
+    }
 
-    cycleCache.set(key, closed);
-    return closed;
+    // 3. Initiate fetch with request collapsing
+    const fetchPromise = (async () => {
+        try {
+            const candles = await client.getCandles(symbol, normTf, 350);
+            if (!candles || !candles.length) return null;
+
+            // Only use closed candles
+            const dur = resolutionMs(normTf);
+            const currentBarTs = Math.floor(Date.now() / dur) * dur;
+            const closed = candles.filter(c => c.timestamp < currentBarTs);
+            if (!closed.length) return null;
+
+            smartCandleCache.set(key, {
+                candles: closed,
+                cachedAt: Date.now(),
+                ttlMs: getTtlForTimeframe(normTf),
+            });
+
+            return closed;
+        } finally {
+            pendingFetches.delete(key);
+        }
+    })();
+
+    pendingFetches.set(key, fetchPromise);
+    return fetchPromise;
 }
 
 /** Safety checks before allowing a new trade */
@@ -79,16 +139,24 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
     const client = createExchangeClient(c);
 
 
-    // AI Managed Bot: evaluate market regime directly via Gemini and assign strategy
+    // AI Managed Bot: evaluate market regime directly via Gemini across 5m, 15m, 1h, and 4h
     const isAiDue = !c.LAST_AI_EVALUATION || (!c.PINE_SCRIPT?.trim() && c.CURRENT_STRATEGY_ID !== 'stand_aside') || isAiEvaluationDue(c);
     if (c.IS_AI_MANAGED && isAiDue) {
         try {
-            const [baseTfCandles, htfCandles] = await Promise.all([
+            const [baseTfCandles, tf15mCandles, tf1hCandles, tf4hCandles] = await Promise.all([
                 fetchTimeframeCandles(client, c.SYMBOL, c.TIMEFRAME || '5m'),
+                fetchTimeframeCandles(client, c.SYMBOL, '15m'),
                 fetchTimeframeCandles(client, c.SYMBOL, '1h'),
+                fetchTimeframeCandles(client, c.SYMBOL, '4h'),
             ]);
             if (baseTfCandles && baseTfCandles.length) {
-                await evaluateAndApplyAiStrategy(c, baseTfCandles, htfCandles ?? undefined);
+                await evaluateAndApplyAiStrategy(
+                    c,
+                    baseTfCandles,
+                    tf15mCandles ?? undefined,
+                    tf1hCandles ?? undefined,
+                    tf4hCandles ?? undefined
+                );
             }
         } catch (evalErr: any) {
             console.error(`[PineEngine][${botId}] AI Market Evaluation failed:`, evalErr?.message ?? evalErr);
