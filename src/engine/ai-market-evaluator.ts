@@ -381,16 +381,20 @@ export async function evaluateAndApplyAiStrategy(
         }
 
         backtestResults = backtestAllStrategies(eligibleStrategies, candleMap, baseTf);
-        const compactBt = backtestResults.map((r, i) =>
-            r.totalTrades > 0
-                ? `${i + 1}.${r.strategyId}:WR=${r.winRate}%,PF=${r.profitFactor},Trades=${r.totalTrades},PnL=${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent}%`
-                : `${i + 1}.${r.strategyId}:Trades=0(NoTriggers)`
-        ).join(' | ');
+        const compactBt = backtestResults.map((r, i) => {
+            if (r.status === 'no_triggers') {
+                return `${i + 1}.${r.strategyId}:STATUS=NO_TRIGGERS(0 Trades)`;
+            }
+            if (r.status === 'insufficient_sample') {
+                return `${i + 1}.${r.strategyId}:STATUS=INSUFFICIENT_SAMPLE(Trades=${r.totalTrades},WR=${r.winRate}%,PF=${r.profitFactor})`;
+            }
+            return `${i + 1}.${r.strategyId}:WR=${r.winRate}%,PF=${r.profitFactor},Trades=${r.totalTrades},PnL=${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent}%`;
+        }).join(' | ');
 
         const topBt = backtestResults[0];
-        const topBtSummary = topBt?.totalTrades > 0
+        const topBtSummary = topBt?.status === 'profitable'
             ? `Top Strategy: "${topBt.strategyName}" (NetPnL: ${topBt.netPnlPercent > 0 ? '+' : ''}${topBt.netPnlPercent}%, WR: ${topBt.winRate}%, PF: ${topBt.profitFactor})`
-            : `Top Strategy by Regime: "${topBt?.strategyName}" (Recent Window: No trigger occurrences in chop)`;
+            : `Top Strategy by Regime: "${topBt?.strategyName}" (Window Status: ${topBt?.status?.toUpperCase()})`;
 
         const btSummary = `[AI MarketEvaluator][${botId}] Detected Regime: "${detectedRegime}" | Gated Candidates: ${eligibleStrategies.length} | ${topBtSummary}`;
         if (logger) logger.addLog(btSummary);
