@@ -6,7 +6,7 @@ import * as ind from '../pine/indicators';
 import { generateWithGemini } from '../ai/gemini-client';
 import { backtestAllStrategies, BacktestResult } from '../pine/backtester';
 import { normalizeTimeframe } from '../pine/interpreter';
-import { BotCycleLogger } from '../utils/cycle-logger';
+import { BotCycleLogger, logAiInteractionToFile } from '../utils/cycle-logger';
 
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
@@ -404,10 +404,16 @@ export async function evaluateAndApplyAiStrategy(
 
         // Direct Gemini API call with regime-gated candidates
         if (env.geminiApiKey) {
+            const aiStartTime = Date.now();
+            let systemPrompt = '';
+            let userPrompt = '';
+            let rawText = '';
+            let aiErrorMsg: string | undefined;
+
             try {
                 const catalogSnippet = eligibleStrategies.map((s: PineStrategyDefinition, idx: number) => `${idx + 1}:${s.id}(${s.name})`).join('\n');
 
-                const systemPrompt = `You are BreakoutEx Quant Regime & Strategy Deductor.
+                systemPrompt = `You are BreakoutEx Quant Regime & Strategy Deductor.
 Detected Regime: ${detectedRegime}.
 Task: Select the single best strategy ID from the Gated Catalog for user mode (${bot.MODE}).
 Gated Catalog:
@@ -423,18 +429,27 @@ Rules:
 Output strict single-line JSON:
 {"regime":"${detectedRegime}","strat":"${eligibleStrategies[0].id}","tf":"5m","tp":2.5,"sl":1.0,"conf":"H","stand":false,"why":"Selected based on backtest edge and regime fit"}`;
 
-                const userPrompt = `PAIR:${symbol}|MODE:${bot.MODE.toUpperCase()}|MIN_RR:${bot.MIN_RR || 1.5}|REGIME:${detectedRegime}
+                userPrompt = `PAIR:${symbol}|MODE:${bot.MODE.toUpperCase()}|MIN_RR:${bot.MIN_RR || 1.5}|REGIME:${detectedRegime}
 5M:P=$${snapshot.currentPrice}|24h=${snapshot.change24h}%|RSI=${snapshot.rsi}|EMA=${snapshot.emaTrend}|ADX=${snapshot.adx}(+DI:${snapshot.diPlus},-DI:${snapshot.diMinus})|ATR=${snapshot.atrPercent}%|BBW=${snapshot.bbWidth}(Sq:${snapshot.isBbSqueeze ? 1 : 0})|Vol=${snapshot.volumeRatio}x
 15M:Trend=${snapshot.htf15mTrend}|RSI=${snapshot.htf15mRsi}
 1H:Trend=${snapshot.htf1hTrend}|RSI=${snapshot.htf1hRsi}
 4H:MacroTrend=${snapshot.htf4hTrend}
 BT:${compactBt}`;
 
-                const rawText = await generateWithGemini({
+                const promptLogMsg = `[AI MarketEvaluator][${botId}] 🤖 Sending market context to Gemini AI (${env.geminiModel}):\n${userPrompt}`;
+                if (logger) logger.addLog(promptLogMsg);
+                console.log(promptLogMsg);
+
+                rawText = await generateWithGemini({
                     prompt: userPrompt,
                     systemInstruction: systemPrompt,
                     temperature: 0.1,
                 });
+
+                const durationMs = Date.now() - aiStartTime;
+                const responseLogMsg = `[AI MarketEvaluator][${botId}] 📥 Gemini AI Raw Response (${durationMs}ms):\n${rawText}`;
+                if (logger) logger.addLog(responseLogMsg);
+                console.log(responseLogMsg);
 
                 const cleaned = rawText.replace(/```json\n?|\n?```/g, '').trim();
                 const json = JSON.parse(cleaned);
@@ -479,8 +494,39 @@ BT:${compactBt}`;
                         baselineTrendStrength: snapshot.trendStrength,
                     });
                 }
+
+                // Log full AI input and output to dedicated file (logs/ai_evaluations.log and logs/ai/)
+                logAiInteractionToFile({
+                    botId,
+                    symbol,
+                    mode: bot.MODE,
+                    model: env.geminiModel,
+                    systemPrompt,
+                    userPrompt,
+                    rawResponse: rawText,
+                    parsedResponse: aiResult || json,
+                    durationMs,
+                    regime: detectedRegime,
+                });
+
             } catch (err: any) {
-                console.warn(`[AI MarketEvaluator][${botId}] Direct Gemini evaluation failed (${err?.message}). Falling back to quant rules.`);
+                aiErrorMsg = err?.message ?? String(err);
+                console.warn(`[AI MarketEvaluator][${botId}] Direct Gemini evaluation failed (${aiErrorMsg}). Falling back to quant rules.`);
+                if (logger) logger.warn(`Direct Gemini evaluation failed (${aiErrorMsg}). Falling back to quant rules.`);
+
+                // Log error to file
+                logAiInteractionToFile({
+                    botId,
+                    symbol,
+                    mode: bot.MODE,
+                    model: env.geminiModel,
+                    systemPrompt,
+                    userPrompt,
+                    rawResponse: rawText || undefined,
+                    error: aiErrorMsg,
+                    durationMs: Date.now() - aiStartTime,
+                    regime: detectedRegime,
+                });
             }
         } else {
             console.warn(`[AI MarketEvaluator][${botId}] GEMINI_API_KEY is not set. Using local quantitative rule engine.`);
