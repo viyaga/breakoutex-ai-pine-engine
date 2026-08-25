@@ -381,8 +381,10 @@ export async function evaluateAndApplyAiStrategy(
         }
 
         backtestResults = backtestAllStrategies(eligibleStrategies, candleMap, baseTf);
-        const compactBt = backtestResults.slice(0, 4).map((r, i) =>
-            `${i + 1}.${r.strategyId}:WR=${r.winRate}%,PF=${r.profitFactor},PnL=${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent}%`
+        const compactBt = backtestResults.map((r, i) =>
+            r.totalTrades > 0
+                ? `${i + 1}.${r.strategyId}:WR=${r.winRate}%,PF=${r.profitFactor},Trades=${r.totalTrades},PnL=${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent}%`
+                : `${i + 1}.${r.strategyId}:Trades=0(NoTriggers)`
         ).join(' | ');
 
         const btSummary = `[AI MarketEvaluator][${botId}] Detected Regime: "${detectedRegime}" | Gated Candidates: ${eligibleStrategies.length} | Top Strategy: "${backtestResults[0]?.strategyName}" (NetPnL: ${backtestResults[0]?.netPnlPercent}%, WR: ${backtestResults[0]?.winRate}%, PF: ${backtestResults[0]?.profitFactor})`;
@@ -449,7 +451,27 @@ BT:${compactBt}`;
                 console.log(responseLogMsg);
 
                 const cleaned = rawText.replace(/```json\n?|\n?```/g, '').trim();
-                const json = JSON.parse(cleaned);
+                let json: any;
+                try {
+                    json = JSON.parse(cleaned);
+                } catch {
+                    // Extract first complete JSON object if model returned multiple comma-separated objects
+                    const match = cleaned.match(/\{[\s\S]*?\}(?=\s*,|\s*$)/);
+                    if (match) {
+                        json = JSON.parse(match[0]);
+                    } else {
+                        const arrMatch = cleaned.match(/\[[\s\S]*\]/);
+                        if (arrMatch) {
+                            const arr = JSON.parse(arrMatch[0]);
+                            json = Array.isArray(arr) ? arr[0] : arr;
+                        } else {
+                            throw new Error(`Invalid JSON returned: ${cleaned.slice(0, 120)}`);
+                        }
+                    }
+                }
+                if (Array.isArray(json)) {
+                    json = json[0];
+                }
 
                 const stratId = json.strat || json.selectedStrategyId;
                 const validStrategyIds = Object.keys(STRATEGY_LIBRARY);
@@ -603,7 +625,7 @@ BT:${compactBt}`;
             timeframe: bot.TIMEFRAME,
             tpPercent: bot.TP_PERCENT,
             slPercent: bot.SL_PERCENT,
-        }).catch(err => {
+        }, logger).catch(err => {
             console.warn(`[AI MarketEvaluator][${botId}] Payload CMS sync warning:`, err?.message ?? err);
         });
 
@@ -652,21 +674,28 @@ BT:${compactBt}`;
         timeframe: bot.TIMEFRAME,
         tpPercent: bot.TP_PERCENT,
         slPercent: bot.SL_PERCENT,
-    }).catch(err => {
+    }, logger).catch(err => {
         console.warn(`[AI MarketEvaluator][${botId}] Payload CMS sync warning:`, err?.message ?? err);
     });
 }
 
 /** Sync AI strategy selection to Payload CMS for admin/mobile display */
-async function syncAiEvaluationToPayload(botId: string, data: any): Promise<void> {
+async function syncAiEvaluationToPayload(botId: string, data: any, logger?: BotCycleLogger): Promise<void> {
     const url = `${env.payloadUrl}/api/trading-bots/update-ai-strategy`;
-    await fetch(url, {
+    const payloadBody = { botId, ...data };
+    
+    const reqMsg = `[Payload API] ➔ Request: POST /api/trading-bots/update-ai-strategy | Strategy: "${data.strategyName}" (${data.strategyId}) | Regime: ${data.marketCondition}`;
+    if (logger) logger.addLog(reqMsg);
+    console.log(`[AI MarketEvaluator][${botId}] ${reqMsg}`);
+
+    const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            botId,
-            ...data,
-        }),
+        body: JSON.stringify(payloadBody),
         signal: AbortSignal.timeout(10_000),
     });
+
+    const resMsg = `[Payload API] ⬅ Response: /api/trading-bots/update-ai-strategy | Status: ${res.status} ${res.statusText}`;
+    if (logger) logger.addLog(resMsg);
+    console.log(`[AI MarketEvaluator][${botId}] ${resMsg}`);
 }

@@ -19,12 +19,16 @@ export async function syncLeverage(
 ): Promise<void> {
     try {
         const prodIdentifier = c.PRODUCT_ID || c.SYMBOL;
+        const reqInfo = `[Exchange API] ➔ Request: setLeverage | Symbol: ${c.SYMBOL} (ID: ${prodIdentifier}) | Target Leverage: ${c.LEVERAGE}x`;
+        if (logger) logger.addLog(reqInfo);
+
         await client.setLeverage(prodIdentifier, c.LEVERAGE, c.SYMBOL);
-        const msg = `[LeverageSync] ✓ Successfully verified & synced ${c.LEVERAGE}x leverage for ${c.SYMBOL}`;
-        if (logger) logger.addLog(msg);
-        log(c.id, msg);
+        
+        const resInfo = `[Exchange API] ⬅ Response: setLeverage | Status: SUCCESS | Leverage verified: ${c.LEVERAGE}x`;
+        if (logger) logger.addLog(resInfo);
+        log(c.id, resInfo);
     } catch (err: any) {
-        const warnMsg = `[LeverageSync] Leverage sync notice (non-fatal): ${err.message}`;
+        const warnMsg = `[Exchange API] ⬅ Response: setLeverage failed (non-fatal): ${err.message}`;
         if (logger) logger.warn(warnMsg);
         else console.warn(`[PineEngine][${c.id}] ${warnMsg}`);
     }

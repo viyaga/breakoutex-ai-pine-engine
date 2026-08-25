@@ -161,6 +161,10 @@ export async function executeTrade(
 
     // ── Entry order ───────────────────────────────────────────────
     const prodIdentifier = c.PRODUCT_ID || c.SYMBOL;
+    const orderReqMsg = `[Exchange API] ➔ Request: placeMarketOrder | Symbol: ${c.SYMBOL} | Side: ${side.toUpperCase()} | Qty: ${finalQty} lots (${c.LOT_SIZE || 1}x) | Leverage: ${c.LEVERAGE}x`;
+    if (logger) logger.addLog(orderReqMsg);
+    log(botId, orderReqMsg);
+
     const entryRes = await client.placeMarketOrder(prodIdentifier, c.SYMBOL, side, finalQty);
     const entryId  = String(entryRes?.result?.id || entryRes?.result?.order_id || '');
     if (!entryId) throw new Error('Entry order did not return an ID');
@@ -173,7 +177,7 @@ export async function executeTrade(
         : ((markPrice - fillPrice) / markPrice) * 100;
     const slippageBps = Math.round(rawSlippagePct * 100);
 
-    const fillMsg = `Entry Order Filled: ID=${entryId} | FillPrice=$${fillPrice.toFixed(2)} (Expected Mark=$${markPrice.toFixed(2)} | Slippage=${slippageBps > 0 ? '+' : ''}${slippageBps} bps / ${rawSlippagePct.toFixed(3)}%)`;
+    const fillMsg = `[Exchange API] ⬅ Response: placeMarketOrder | OrderID: ${entryId} | FillPrice: $${fillPrice.toFixed(2)} (Mark: $${markPrice.toFixed(2)} | Slippage: ${slippageBps > 0 ? '+' : ''}${slippageBps} bps / ${rawSlippagePct.toFixed(3)}%)`;
     if (logger) logger.addLog(fillMsg);
     log(botId, fillMsg);
 
@@ -189,7 +193,7 @@ export async function executeTrade(
     log(botId, tpslMsg);
 
     // ── Bracket order ─────────────────────────────────────────────
-    const bracket = await client.placeBracketOrder({
+    const bracketReq = {
         productId:    prodIdentifier,
         symbol:       c.SYMBOL,
         tpTrigger:    tp,
@@ -197,11 +201,16 @@ export async function executeTrade(
         slTrigger:    sl,
         positionSide: side,
         decimals:     c.PRICE_DECIMAL_PLACES,
-    });
+    };
+    const bracketReqMsg = `[Exchange API] ➔ Request: placeBracketOrder | TP_Trigger: $${tp} (Limit: $${tpLimit}) | SL_Trigger: $${sl}`;
+    if (logger) logger.addLog(bracketReqMsg);
+    log(botId, bracketReqMsg);
+
+    const bracket = await client.placeBracketOrder(bracketReq);
 
     if (!bracket.success) throw new Error('Failed to place TP/SL bracket orders');
 
-    const bracketMsg = `Bracket Orders Placed on Exchange: TP_ID=${bracket.tpId} | SL_ID=${bracket.slId}`;
+    const bracketMsg = `[Exchange API] ⬅ Response: placeBracketOrder | Status: SUCCESS | TP_OrderID: ${bracket.tpId} | SL_OrderID: ${bracket.slId}`;
     if (logger) logger.addLog(bracketMsg);
     log(botId, bracketMsg);
 

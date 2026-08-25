@@ -141,7 +141,10 @@ export function backtestStrategy(
             for (const [tf, cList] of candleMap.entries()) {
                 if (tf !== baseNormTf) {
                     const cutoffTs = currentBar.timestamp;
-                    const subSlice = cList.filter(c => c.timestamp <= cutoffTs);
+                    let subSlice = cList.filter(c => c.timestamp <= cutoffTs);
+                    if (subSlice.length < 20 && cList.length >= 20) {
+                        subSlice = cList.slice(0, 30);
+                    }
                     sliceMap.set(tf, subSlice);
                 }
             }
