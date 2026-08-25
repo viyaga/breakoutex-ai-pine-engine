@@ -26,7 +26,7 @@ async function fetchTimeframeCandles(
     const key = `${symbol}:${normTf}`;
     if (cycleCache.has(key)) return cycleCache.get(key)!;
 
-    const candles = await client.getCandles(symbol, normTf, 200);
+    const candles = await client.getCandles(symbol, normTf, 350);
     if (!candles || !candles.length) return null;
 
     // Only use closed candles
@@ -80,7 +80,8 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
 
 
     // AI Managed Bot: evaluate market regime directly via Gemini and assign strategy
-    if (c.IS_AI_MANAGED && (!c.PINE_SCRIPT?.trim() || isAiEvaluationDue(c))) {
+    const isAiDue = !c.LAST_AI_EVALUATION || (!c.PINE_SCRIPT?.trim() && c.CURRENT_STRATEGY_ID !== 'stand_aside') || isAiEvaluationDue(c);
+    if (c.IS_AI_MANAGED && isAiDue) {
         try {
             const [baseTfCandles, htfCandles] = await Promise.all([
                 fetchTimeframeCandles(client, c.SYMBOL, c.TIMEFRAME || '5m'),
@@ -96,7 +97,11 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
 
 
     if (!c.PINE_SCRIPT?.trim()) {
-        console.warn(`[PineEngine][${botId}] No Pine Script — skipping`);
+        if (c.IS_AI_MANAGED && c.CURRENT_STRATEGY_ID === 'stand_aside') {
+            console.log(`[PineEngine][${botId}] ⏸️ AI Status: STANDING ASIDE (${c.AI_REASONING || 'Market condition unfavorable'}) — skipping trade entry`);
+        } else {
+            console.warn(`[PineEngine][${botId}] No Pine Script — skipping`);
+        }
         return;
     }
 

@@ -126,7 +126,7 @@ export class BybitClient implements IExchangeClient {
             category: 'linear',
             symbol: cleanSym,
             interval,
-            limit: Math.min(200, Math.max(20, limitBars + 5)),
+            limit: Math.min(1000, Math.max(20, limitBars + 5)),
         }, true);
 
         const list = res?.result?.list;

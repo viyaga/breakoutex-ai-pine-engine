@@ -114,7 +114,7 @@ export class BinanceClient implements IExchangeClient {
         const raw = await this.request('GET', '/fapi/v1/klines', {
             symbol: cleanSym,
             interval,
-            limit: Math.min(500, Math.max(20, limitBars + 5)),
+            limit: Math.min(1000, Math.max(20, limitBars + 5)),
         }, true);
 
         if (!Array.isArray(raw)) return [];

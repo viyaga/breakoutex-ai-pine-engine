@@ -453,12 +453,49 @@ BT:${compactBt}`;
     }
 
 
-    // Apply selected strategy
+    // Apply selected strategy or stand aside
     const selectedStrat = getStrategyById(aiResult.selectedStrategyId) || STRATEGY_LIBRARY.mtf_trend_continuation;
 
     const now = new Date();
-
     const nextEval = new Date(now.getTime() + SIX_HOURS_MS);
+
+    if (aiResult.standAside) {
+        console.log(`[AI MarketEvaluator][${botId}] ⏸️ AI advised to STAND ASIDE (market condition: ${aiResult.marketCondition}, reason: "${aiResult.reasoning}"). Skipping strategy assignment to pause new trades.`);
+
+        // Clear pine script to prevent entering trades in choppy/unreadable market
+        bot.PINE_SCRIPT = '';
+        bot.CURRENT_STRATEGY_ID = 'stand_aside';
+        bot.CURRENT_STRATEGY_NAME = 'Stand Aside (Market Unfavorable)';
+        bot.MARKET_CONDITION = aiResult.marketCondition;
+        bot.AI_REASONING = aiResult.reasoning;
+        bot.LAST_AI_EVALUATION = now.toISOString();
+        bot.NEXT_AI_EVALUATION = nextEval.toISOString();
+
+        botEvaluationCache.set(botId, {
+            lastEvaluationTs: now.getTime(),
+            strategyId: 'stand_aside',
+            baselineAtr: snapshot.atr,
+            baselineEmaTrend: snapshot.emaTrend,
+        });
+
+        // Sync stand aside state to Payload CMS
+        syncAiEvaluationToPayload(botId, {
+            strategyId: 'stand_aside',
+            strategyName: 'Stand Aside (Market Unfavorable)',
+            marketCondition: aiResult.marketCondition,
+            aiReasoning: aiResult.reasoning,
+            lastAiEvaluation: now.toISOString(),
+            nextAiEvaluation: nextEval.toISOString(),
+            pineScript: '',
+            timeframe: bot.TIMEFRAME,
+            tpPercent: bot.TP_PERCENT,
+            slPercent: bot.SL_PERCENT,
+        }).catch(err => {
+            console.warn(`[AI MarketEvaluator][${botId}] Payload CMS sync warning:`, err?.message ?? err);
+        });
+
+        return;
+    }
 
     // Apply to in-memory bot runtime configuration
     bot.PINE_SCRIPT = selectedStrat.pineScript;

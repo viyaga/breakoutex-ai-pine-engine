@@ -29,7 +29,7 @@ export function backtestStrategy(
     strategy: PineStrategyDefinition,
     candleMap: Map<string, Candle[]>,
     baseTimeframe = '5m',
-    windowBars = 120
+    windowBars = 300
 ): BacktestResult {
     const baseNormTf = normalizeTimeframe(baseTimeframe);
     const allBaseCandles = candleMap.get(baseNormTf) || Array.from(candleMap.values())[0] || [];
@@ -69,6 +69,8 @@ export function backtestStrategy(
     const tpPct = strategy.defaultTpPercent / 100;
     const slPct = strategy.defaultSlPercent / 100;
     const feePct = 0.0008; // 0.08% roundtrip taker fee estimate
+    const slippagePct = 0.0005; // 0.05% realistic market execution slippage model
+    const totalCostPct = feePct + slippagePct; // 0.13% total frictional cost per trade
 
     // Minimum warmup period for indicators
     const warmup = 25;
@@ -110,7 +112,7 @@ export function backtestStrategy(
                     ? ((exitPrice - entryPrice) / entryPrice) * 100
                     : ((entryPrice - exitPrice) / entryPrice) * 100;
 
-                const netTradePnl = rawTradePnl - (feePct * 100);
+                const netTradePnl = rawTradePnl - (totalCostPct * 100);
 
                 if (outcome === 'win') {
                     wins++;
@@ -198,13 +200,14 @@ export function backtestStrategy(
 export function backtestAllStrategies(
     strategies: PineStrategyDefinition[],
     candleMap: Map<string, Candle[]>,
-    baseTimeframe = '5m'
+    baseTimeframe = '5m',
+    windowBars = 300
 ): BacktestResult[] {
     const results: BacktestResult[] = [];
 
     for (const strat of strategies) {
         try {
-            const res = backtestStrategy(strat, candleMap, baseTimeframe);
+            const res = backtestStrategy(strat, candleMap, baseTimeframe, windowBars);
             results.push(res);
         } catch {
             // Ignore failures
