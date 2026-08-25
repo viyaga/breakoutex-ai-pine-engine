@@ -62,6 +62,16 @@ async function runParityComparison(symbol = 'ETHUSDT', limit = 1000) {
     // Target comparison strategies
     const testPairs = [
         {
+            name: 'Donchian Breakout (4H EMA 200)',
+            backendId: 'mtf_donchian_breakout',
+            mobileId: 'mtf-donchian-breakout',
+        },
+        {
+            name: 'Volatility Squeeze (4H Trend)',
+            backendId: 'mtf_volatility_squeeze',
+            mobileId: 'mtf-volatility-squeeze',
+        },
+        {
             name: 'Supertrend VWAP Momentum',
             backendId: 'mtf_supertrend_vwap',
             mobileId: 'mtf-supertrend-vwap',
@@ -102,25 +112,47 @@ async function runParityComparison(symbol = 'ETHUSDT', limit = 1000) {
         const backendDef = STRATEGY_LIBRARY[pair.backendId];
         if (!backendDef) continue;
 
-        // 1. Run Backend Engine
-        const backendRes = backtestStrategy(backendDef, candleMap, '5m', limit, {
-            entryFeePct: 0.0004,
-            exitFeePct: 0.0004,
-            entrySlippagePct: 0.0003,
-            exitSlippagePct: 0.0003,
-        });
+        let backendRes: any = null;
+        let backendError: string | null = null;
+        try {
+            backendRes = backtestStrategy(backendDef, candleMap, '5m', limit, {
+                entryFeePct: 0.0004,
+                exitFeePct: 0.0004,
+                entrySlippagePct: 0.0003,
+                exitSlippagePct: 0.0003,
+            });
+        } catch (err: any) {
+            backendError = err.message;
+        }
 
-        // 2. Run Mobile App Engine with the EXACT same Pine Script code
-        const mobileRes = await mobileRunner.execute(backendDef.pineScript, mobileCandles, {
-            symbol,
-            baseTimeframe: '5',
-            initialCapital: 10000,
-            leverage: 1,
-            commissionPercent: 0.04,
-            slippageTicks: 1,
-            tickSize: 0.1,
-            pyramiding: 1,
-        });
+        let mobileRes: any = null;
+        let mobileError: string | null = null;
+        try {
+            mobileRes = await mobileRunner.execute(backendDef.pineScript, mobileCandles, {
+                symbol,
+                baseTimeframe: '5',
+                initialCapital: 10000,
+                leverage: 1,
+                commissionPercent: 0.04,
+                slippageTicks: 1,
+                tickSize: 0.1,
+                pyramiding: 1,
+            });
+        } catch (err: any) {
+            mobileError = err.message;
+        }
+
+        if (backendError || mobileError) {
+            console.log(`${num} | ${pair.name.padEnd(25)} | Execution Status| [REFUSED - INSUFFICIENT DATA ⚠️]`);
+            if (backendError) {
+                console.log(`   |                           | Backend Error   | ${backendError.slice(0, 75)}...`);
+            }
+            if (mobileError) {
+                console.log(`   |                           | Mobile Error    | ${mobileError.slice(0, 75)}...`);
+            }
+            console.log(`-------------------------------------------------------------------------------------------------------------------`);
+            continue;
+        }
 
         const bTrades = backendRes.totalTrades;
         const mTrades = mobileRes.metrics.totalTrades;

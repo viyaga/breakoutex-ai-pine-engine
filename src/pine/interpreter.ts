@@ -21,6 +21,9 @@ interface StrategyContext {
  */
 export function wrapSeries<T extends any[]>(arr: T): T {
     if (!Array.isArray(arr)) return arr;
+    (arr as any).valueOf = function() {
+        return this[this.length - 1];
+    };
     (arr as any)[Symbol.toPrimitive] = function() {
         return this[this.length - 1];
     };
@@ -44,6 +47,100 @@ export function normalizeTimeframe(tf: string | number): string {
     if (s === 'd' || s === '1d' || s === '1440') return '1d';
     if (s === 'w' || s === '1w') return '1w';
     return s;
+}
+
+/**
+ * Converts any timeframe string to total minutes.
+ */
+export function parseTimeframeToMinutes(tf: string | number): number {
+    const s = normalizeTimeframe(tf);
+    if (s.endsWith('m')) return parseInt(s) || 5;
+    if (s.endsWith('h')) return (parseInt(s) || 1) * 60;
+    if (s.endsWith('d')) return (parseInt(s) || 1) * 1440;
+    if (s.endsWith('w')) return (parseInt(s) || 1) * 10080;
+    return parseInt(s) || 5;
+}
+
+export interface DataSufficiencyRequirement {
+    requiredBaseCandles: number;
+    requiredDays: number;
+    limitingFactor: string;
+    indicatorsDetected: { timeframe: string; indicator: string; period: number; requiredBaseBars: number }[];
+}
+
+/**
+ * Mathematically calculates the exact minimum required base candle count
+ * needed to fully warm up all HTF and base indicators in a Pine Script.
+ */
+export function analyzeDataSufficiency(
+    script: string,
+    baseTimeframe = '5m'
+): DataSufficiencyRequirement {
+    const baseMinutes = parseTimeframeToMinutes(baseTimeframe);
+    const indicators: { timeframe: string; indicator: string; period: number; requiredBaseBars: number }[] = [];
+
+    // 1. Scan for request.security calls (supporting multiline arguments)
+    const secRegex = /request\.security\s*\(\s*[\s\S]*?,\s*["']([^"']+)["']\s*,\s*([\s\S]*?)(?:,\s*(?:lookahead|gaps|\w+)\s*=|\))/g;
+    let match: RegExpExecArray | null;
+    while ((match = secRegex.exec(script)) !== null) {
+        const tf = match[1];
+        const rawExpr = match[2].trim();
+        const tfMinutes = parseTimeframeToMinutes(tf);
+        const ratio = Math.max(1, tfMinutes / baseMinutes);
+
+        // Find periods inside expr (e.g. ema(close, 200), highest(high, 20), ema(close, structureLen))
+        const periodMatch = rawExpr.match(/(?:ta\.\w+|\w+)\s*\([^,)]+,\s*(\d+)/) || rawExpr.match(/(?:ta\.\w+|\w+)\s*\(\s*(\d+)/);
+        let period = periodMatch ? parseInt(periodMatch[1]) : 20;
+
+        // Check if length is variable name like structureLen or fastLen
+        if (!periodMatch) {
+            const varMatch = rawExpr.match(/(?:ta\.\w+|\w+)\s*\([^,)]+,\s*([a-zA-Z_]\w*)/);
+            if (varMatch && varMatch[1]) {
+                const varName = varMatch[1];
+                const inputDecl = script.match(new RegExp(`${varName}\\s*=\\s*input\\.(?:int|float)\\s*\\(\\s*(\\d+)`));
+                if (inputDecl) period = parseInt(inputDecl[1]);
+            }
+        }
+
+        const requiredBaseBars = Math.ceil(period * ratio) + 10;
+
+        indicators.push({
+            timeframe: tf,
+            indicator: rawExpr.replace(/\s+/g, ' '),
+            period,
+            requiredBaseBars,
+        });
+    }
+
+    // 2. Scan for base indicators
+    const baseIndRegex = /ta\.(ema|sma|rsi|atr|highest|lowest|stoch|bb|bollinger|keltner|donchian)\s*\([^,)]+,\s*(\d+)/g;
+    while ((match = baseIndRegex.exec(script)) !== null) {
+        const indName = match[1];
+        const period = parseInt(match[2]);
+        indicators.push({
+            timeframe: baseTimeframe,
+            indicator: `ta.${indName}(${period})`,
+            period,
+            requiredBaseBars: period + 10,
+        });
+    }
+
+    let maxRequired = 50; // baseline minimum
+    let limiting = 'Baseline strategy warmup';
+
+    for (const ind of indicators) {
+        if (ind.requiredBaseBars > maxRequired) {
+            maxRequired = ind.requiredBaseBars;
+            limiting = `${ind.timeframe} ${ind.indicator} (requires ${ind.period} ${ind.timeframe} bars = ${ind.requiredBaseBars.toLocaleString()} base bars)`;
+        }
+    }
+
+    return {
+        requiredBaseCandles: maxRequired,
+        requiredDays: Number(((maxRequired * baseMinutes) / 1440).toFixed(1)),
+        limitingFactor: limiting,
+        indicatorsDetected: indicators,
+    };
 }
 
 /**
@@ -431,7 +528,8 @@ export function transformPineToJs(script: string, _last: number): string {
     s = transformSecurityCalls(s);
 
     // 5. Convert Pine series[N] offset access -> array[last - N]
-    s = s.replace(/(\w+)\[(\d+)\]/g, (_, name, offset) => {
+    // Supports both identifier[N] and functionCall(...)[N]
+    s = s.replace(/(\w+(?:\([^)]*\))?)\[(\d+)\]/g, (_, name, offset) => {
         const n = parseInt(offset);
         if (n === 0) return `${name}[last]`;
         return `${name}[last - ${n}]`;

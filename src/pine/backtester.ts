@@ -8,7 +8,7 @@
 // ================================================================
 
 import { Candle } from '../config/types';
-import { evaluatePineScript, normalizeTimeframe } from './interpreter';
+import { evaluatePineScript, normalizeTimeframe, analyzeDataSufficiency } from './interpreter';
 import { PineStrategyDefinition } from './strategy-library';
 
 export type BacktestStatus =
@@ -152,8 +152,13 @@ export function backtestStrategy(
     const exitSlip = options.exitSlippagePct ?? 0.0003;    // 0.03% slippage
     const processOnClose = options.processOrdersOnClose ?? false;
 
-    if (!allBaseCandles || allBaseCandles.length < 30) {
-        return createEmptyResult(strategy);
+    const sufficiency = analyzeDataSufficiency(strategy.pineScript, baseTimeframe);
+    if (!allBaseCandles || allBaseCandles.length < sufficiency.requiredBaseCandles) {
+        throw new Error(
+            `[INSUFFICIENT_HISTORICAL_DATA] Cannot backtest strategy "${strategy.name}". ` +
+            `Required: ${sufficiency.requiredBaseCandles.toLocaleString()} base candles (${sufficiency.requiredDays} days) to warm up ${sufficiency.limitingFactor}, ` +
+            `but only ${(allBaseCandles?.length || 0).toLocaleString()} candles were provided. Execution rejected to prevent invalid zero-trade metrics.`
+        );
     }
 
     const testCandles = allBaseCandles.slice(-windowBars);

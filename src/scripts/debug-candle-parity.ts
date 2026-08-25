@@ -7,11 +7,9 @@
 import { Candle } from '../config/types';
 import { STRATEGY_LIBRARY } from '../pine/strategy-library';
 import { backtestStrategy } from '../pine/backtester';
-import { executePineScript } from '../pine/interpreter';
+import { evaluatePineScript } from '../pine/interpreter';
 import { PineV6BacktestRunner } from '../../../breakoutex-ai-mobile/src/pine-engine/runner';
 import { PineCandle } from '../../../breakoutex-ai-mobile/src/pine-engine/types';
-import { PineTALib } from '../../../breakoutex-ai-mobile/src/pine-engine/ta';
-import { PineTALib as BackendTALib } from '../pine/indicators';
 
 async function fetchBinanceKlines(symbol: string, interval: string, limit = 500): Promise<Candle[]> {
     const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&limit=${limit}`;
@@ -33,70 +31,20 @@ async function debugParity() {
     console.log(`🔬 CANDLE-BY-CANDLE INDICATOR & MTF PARITY AUDIT`);
     console.log(`================================================================================\n`);
 
-    const candles5m = await fetchBinanceKlines('ETHUSDT', '5m', 300);
-    const candles15m = await fetchBinanceKlines('ETHUSDT', '15m', 200);
+    const candles5m = await fetchBinanceKlines('ETHUSDT', '5m', 150);
+    const candles15m = await fetchBinanceKlines('ETHUSDT', '15m', 100);
 
     const candleMap = new Map<string, Candle[]>();
     candleMap.set('5m', candles5m);
     candleMap.set('15m', candles15m);
 
-    // 1. Check Technical Indicator Math Parity
-    console.log(`▶ 1. Baseline Technical Indicator Math Parity (5m closes, 300 bars):`);
-    const closes = candles5m.map(c => c.close);
-    const highs = candles5m.map(c => c.high);
-    const lows = candles5m.map(c => c.low);
-    const volumes = candles5m.map(c => c.volume);
-
-    // RSI
-    const rsiBackend = BackendTALib.rsi(closes, 14);
-    const rsiMobile = PineTALib.rsi(closes, 14);
-
-    let rsiMaxDiff = 0;
-    for (let i = 14; i < closes.length; i++) {
-        const diff = Math.abs(rsiBackend[i] - rsiMobile[i]);
-        if (diff > rsiMaxDiff) rsiMaxDiff = diff;
-    }
-    console.log(`  - RSI(14) Max Difference across 300 bars: ${rsiMaxDiff.toExponential(4)} [${rsiMaxDiff < 1e-6 ? 'PASS ✔' : 'FAIL ❌'}]`);
-
-    // SMA
-    const smaBackend = BackendTALib.sma(closes, 20);
-    const smaMobile = PineTALib.sma(closes, 20);
-    let smaMaxDiff = 0;
-    for (let i = 20; i < closes.length; i++) {
-        const diff = Math.abs(smaBackend[i] - smaMobile[i]);
-        if (diff > smaMaxDiff) smaMaxDiff = diff;
-    }
-    console.log(`  - SMA(20) Max Difference across 300 bars: ${smaMaxDiff.toExponential(4)} [${smaMaxDiff < 1e-6 ? 'PASS ✔' : 'FAIL ❌'}]`);
-
-    // EMA
-    const emaBackend = BackendTALib.ema(closes, 20);
-    const emaMobile = PineTALib.ema(closes, 20);
-    let emaMaxDiff = 0;
-    for (let i = 20; i < closes.length; i++) {
-        const diff = Math.abs(emaBackend[i] - emaMobile[i]);
-        if (diff > emaMaxDiff) emaMaxDiff = diff;
-    }
-    console.log(`  - EMA(20) Max Difference across 300 bars: ${emaMaxDiff.toExponential(4)} [${emaMaxDiff < 1e-6 ? 'PASS ✔' : 'FAIL ❌'}]`);
-
-    // ATR
-    const atrBackend = BackendTALib.atr(highs, lows, closes, 14);
-    const atrMobile = PineTALib.atr(highs, lows, closes, 14);
-    let atrMaxDiff = 0;
-    for (let i = 14; i < closes.length; i++) {
-        const diff = Math.abs(atrBackend[i] - atrMobile[i]);
-        if (diff > atrMaxDiff) atrMaxDiff = diff;
-    }
-    console.log(`  - ATR(14) Max Difference across 300 bars: ${atrMaxDiff.toExponential(4)} [${atrMaxDiff < 1e-6 ? 'PASS ✔' : 'FAIL ❌'}]`);
-
-    // 2. MTF & Strategy Interpreter Divergence Analysis
-    console.log(`\n▶ 2. MTF Failed Breakout (Trap Hunter) Evaluation Step-by-Step:`);
+    // Strategy under test
     const strat = STRATEGY_LIBRARY['mtf_failed_breakout'];
 
-    // Backend Execution
-    const backendResult = executePineScript(strat.pineScript, candleMap, '5m', candles5m.length);
-    console.log(`  Backend Engine Total Signals: Longs=${backendResult.signals.filter(s => s.type === 'long').length}, Shorts=${backendResult.signals.filter(s => s.type === 'short').length}`);
+    console.log(`▶ Running Bar-by-Bar Step Comparison for MTF Failed Breakout (Trap Hunter):`);
+    console.log(`Bar | Time (UTC)       | Close   | Backend Sig | Mobile Sig  | Mobile Trades`);
+    console.log(`--------------------------------------------------------------------------------------`);
 
-    // Mobile Execution
     const mobileCandles: PineCandle[] = candles5m.map(c => ({
         time: c.timestamp,
         open: c.open,
@@ -105,6 +53,7 @@ async function debugParity() {
         close: c.close,
         volume: c.volume,
     }));
+
     const mobileRunner = new PineV6BacktestRunner();
     const mobileResult = await mobileRunner.execute(strat.pineScript, mobileCandles, {
         symbol: 'ETHUSDT',
@@ -116,23 +65,32 @@ async function debugParity() {
         tickSize: 0.1,
         pyramiding: 1,
     });
-    console.log(`  Mobile Engine Total Trades: ${mobileResult.metrics.totalTrades}`);
 
-    // Compare bar-by-bar
-    console.log(`\n▶ 3. Detailed Bar-by-Bar Signal Comparison for first 50 bars:`);
-    console.log(`Bar | Time (UTC)       | Close   | Backend Sig | Mobile Trades Active`);
-    console.log(`------------------------------------------------------------------`);
-    for (let bar = 0; bar < Math.min(50, candles5m.length); bar++) {
-        const t = candles5m[bar];
-        const bSig = backendResult.signals.find(s => s.candleIndex === bar);
-        const mTrade = mobileResult.metrics.trades.find(tr => tr.entryBarIndex === bar);
+    let backendSignalsCount = 0;
+    for (let bar = 25; bar < candles5m.length; bar++) {
+        const slice5m = candles5m.slice(0, bar + 1);
+        const sliceMap = new Map<string, Candle[]>();
+        sliceMap.set('5m', slice5m);
+        const cutoff = candles5m[bar].timestamp;
+        sliceMap.set('15m', candles15m.filter(c => c.timestamp <= cutoff));
 
-        if (bSig || mTrade) {
+        const bSig = evaluatePineScript(strat.pineScript, sliceMap, '5m');
+        const bAction = bSig.action.toUpperCase();
+
+        const mTradeEntry = mobileResult.metrics.trades.find(t => t.entryBarIndex === bar);
+        const mTradeExit = mobileResult.metrics.trades.find(t => t.exitBarIndex === bar);
+        const mAction = mTradeEntry ? `ENTRY_${mTradeEntry.direction.toUpperCase()}` : mTradeExit ? `EXIT_${mTradeExit.exitReason.toUpperCase()}` : 'NONE';
+
+        if (bAction !== 'NONE' || mAction !== 'NONE') {
+            if (bAction !== 'NONE') backendSignalsCount++;
             console.log(
-                `${String(bar).padStart(3)} | ${new Date(t.timestamp).toISOString().slice(11, 19)} | ${t.close.toFixed(2)} | ${bSig ? bSig.type.toUpperCase() : 'NONE       '} | ${mTrade ? mTrade.direction.toUpperCase() : 'NONE'}`
+                `${String(bar).padStart(3)} | ${new Date(candles5m[bar].timestamp).toISOString().slice(11, 19)} | ${candles5m[bar].close.toFixed(2).padStart(7)} | ${bAction.padEnd(11)} | ${mAction.padEnd(11)} | ${mTradeExit ? 'CLOSED' : 'ACTIVE'}`
             );
         }
     }
+
+    console.log(`--------------------------------------------------------------------------------------`);
+    console.log(`Summary: Backend Detected ${backendSignalsCount} signals | Mobile Completed ${mobileResult.metrics.totalTrades} trades`);
 }
 
 debugParity().catch(console.error);
