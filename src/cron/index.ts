@@ -1,4 +1,4 @@
-﻿// ================================================================
+// ================================================================
 // Cron Scheduler — runs every minute, processes all active Pine bots
 // Concurrency-limited pool per cycle for speed & stability
 // ================================================================
@@ -48,8 +48,10 @@ export function startCronJob(): void {
             console.error('[Cron] CRITICAL cycle error:', err);
         } finally {
             const ms = Date.now() - cycleStart;
+            const memUsed = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+            const memTotal = Math.round(process.memoryUsage().heapTotal / 1024 / 1024);
             console.log(`${'─'.repeat(60)}`);
-            console.log(`[Cron] ■ CYCLE DONE  ✓${succeeded} ✗${failed}  ${ms}ms`);
+            console.log(`[Cron] ■ CYCLE DONE  ✓${succeeded} ✗${failed}  ${ms}ms | Heap: ${memUsed}MB / ${memTotal}MB`);
             console.log(`${'─'.repeat(60)}\n`);
         }
     });

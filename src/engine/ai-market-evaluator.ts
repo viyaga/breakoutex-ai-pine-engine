@@ -6,6 +6,7 @@ import * as ind from '../pine/indicators';
 import { generateWithGemini } from '../ai/gemini-client';
 import { backtestAllStrategies, BacktestResult } from '../pine/backtester';
 import { normalizeTimeframe } from '../pine/interpreter';
+import { BotCycleLogger } from '../utils/cycle-logger';
 
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
@@ -308,7 +309,8 @@ export async function evaluateAndApplyAiStrategy(
     candles: Candle[],
     tf15mCandles?: Candle[],
     tf1hCandles?: Candle[],
-    tf4hCandles?: Candle[]
+    tf4hCandles?: Candle[],
+    logger?: BotCycleLogger
 ): Promise<void> {
     const botId = bot.id;
     const symbol = bot.SYMBOL;
@@ -326,16 +328,22 @@ export async function evaluateAndApplyAiStrategy(
         const cacheCheck = isRegimeCacheValid(cachedGlobal, snapshot);
         if (cacheCheck.valid) {
             const ageMins = Math.round((Date.now() - cachedGlobal.evaluatedAt) / 60_000);
-            console.log(`[AI Cache] ⚡ Cache HIT for ${cacheKey} (Age: ${ageMins}m) — Reusing active regime, 0 LLM tokens consumed.`);
+            const msg = `[AI Cache] ⚡ Cache HIT for ${cacheKey} (Age: ${ageMins}m) — Reusing active regime, 0 LLM tokens consumed.`;
+            if (logger) logger.addLog(msg);
+            console.log(msg);
             aiResult = cachedGlobal.response;
         } else {
-            console.log(`[AI Cache] 🔄 Cache INVALIDATED for ${cacheKey} (${cacheCheck.reason}) — Re-analyzing market.`);
+            const msg = `[AI Cache] 🔄 Cache INVALIDATED for ${cacheKey} (${cacheCheck.reason}) — Re-analyzing market.`;
+            if (logger) logger.addLog(msg);
+            console.log(msg);
         }
     }
 
     // 2. If Cache Miss or Invalidated, run Backtest & Query Gemini AI
     if (!aiResult) {
-        console.log(`[AI MarketEvaluator][${botId}] ── Triggering Direct Gemini AI Market Analysis & Backtest for ${symbol} ──`);
+        const startMsg = `[AI MarketEvaluator][${botId}] ── Triggering Direct Gemini AI Market Analysis & Backtest for ${symbol} ──`;
+        if (logger) logger.addLog(startMsg);
+        console.log(startMsg);
 
         // 1. Quantitative Pre-Classification (Regime Detector)
         let detectedRegime: AiMarketEvaluationResponse['marketCondition'] = 'ranging_choppy';
@@ -514,7 +522,9 @@ BT:${compactBt}`;
     const nextEval = new Date(now.getTime() + SIX_HOURS_MS);
 
     if (aiResult.standAside) {
-        console.log(`[AI MarketEvaluator][${botId}] ⏸️ AI advised to STAND ASIDE (market condition: ${aiResult.marketCondition}, reason: "${aiResult.reasoning}"). Skipping strategy assignment to pause new trades.`);
+        const standMsg = `[AI MarketEvaluator][${botId}] ⏸️ AI advised to STAND ASIDE (market condition: ${aiResult.marketCondition}, reason: "${aiResult.reasoning}"). Skipping strategy assignment to pause new trades.`;
+        if (logger) logger.addLog(standMsg);
+        console.log(standMsg);
 
         // Clear pine script to prevent entering trades in choppy/unreadable market
         bot.PINE_SCRIPT = '';
@@ -572,8 +582,14 @@ BT:${compactBt}`;
     });
 
 
-    console.log(`[AI MarketEvaluator][${botId}] ✓ AI Selected Strategy: "${selectedStrat.name}" [${selectedStrat.id}] | Regime: ${aiResult.marketCondition} | Next Eval: ${nextEval.toISOString()}`);
-    console.log(`[AI MarketEvaluator][${botId}] Reasoning: ${aiResult.reasoning}`);
+    const selectMsg = `[AI MarketEvaluator][${botId}] ✓ AI Selected Strategy: "${selectedStrat.name}" [${selectedStrat.id}] | Regime: ${aiResult.marketCondition} | Next Eval: ${nextEval.toISOString()}`;
+    const reasonMsg = `[AI MarketEvaluator][${botId}] Reasoning: ${aiResult.reasoning}`;
+    if (logger) {
+        logger.addLog(selectMsg);
+        logger.addLog(reasonMsg);
+    }
+    console.log(selectMsg);
+    console.log(reasonMsg);
 
     // Asynchronously sync strategy assignment back to Payload CMS for web and mobile dashboard
     syncAiEvaluationToPayload(botId, {

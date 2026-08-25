@@ -11,7 +11,8 @@ import { PineBotConfig } from '../config/types';
 import { syncLeverage, handleOpenTrade, getOrCreateState } from './position-manager';
 import { executeTrade } from './trade-executor';
 import { Candle } from '../config/types';
-import { isAiEvaluationDue, evaluateAndApplyAiStrategy } from './ai-market-evaluator';
+import { isAiEvaluationDue, evaluateAndApplyAiStrategy, computeMarketSnapshot } from './ai-market-evaluator';
+import { BotCycleLogger } from '../utils/cycle-logger';
 
 // Multi-Timeframe TTL Smart Candle Cache across all bots and cycles
 interface CandleCacheEntry {
@@ -136,52 +137,55 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
         return;
     }
 
+    const logger = new BotCycleLogger(botId, c.SYMBOL);
+    logger.addLog(`Bot Configuration: Mode=${c.MODE} | Capital=$${c.CAPITAL_AMOUNT} | Leverage=${c.LEVERAGE}x | TF=${c.TIMEFRAME} | AI_Managed=${Boolean(c.IS_AI_MANAGED)} | MinScore=${c.MIN_SCORE || 50}`);
+
     const client = createExchangeClient(c);
 
-
-    // AI Managed Bot: evaluate market regime directly via Gemini across 5m, 15m, 1h, and 4h
-    const isAiDue = !c.LAST_AI_EVALUATION || (!c.PINE_SCRIPT?.trim() && c.CURRENT_STRATEGY_ID !== 'stand_aside') || isAiEvaluationDue(c);
-    if (c.IS_AI_MANAGED && isAiDue) {
-        try {
-            const [baseTfCandles, tf15mCandles, tf1hCandles, tf4hCandles] = await Promise.all([
-                fetchTimeframeCandles(client, c.SYMBOL, c.TIMEFRAME || '5m'),
-                fetchTimeframeCandles(client, c.SYMBOL, '15m'),
-                fetchTimeframeCandles(client, c.SYMBOL, '1h'),
-                fetchTimeframeCandles(client, c.SYMBOL, '4h'),
-            ]);
-            if (baseTfCandles && baseTfCandles.length) {
-                await evaluateAndApplyAiStrategy(
-                    c,
-                    baseTfCandles,
-                    tf15mCandles ?? undefined,
-                    tf1hCandles ?? undefined,
-                    tf4hCandles ?? undefined
-                );
-            }
-        } catch (evalErr: any) {
-            console.error(`[PineEngine][${botId}] AI Market Evaluation failed:`, evalErr?.message ?? evalErr);
-        }
-    }
-
-
-    if (!c.PINE_SCRIPT?.trim()) {
-        if (c.IS_AI_MANAGED && c.CURRENT_STRATEGY_ID === 'stand_aside') {
-            console.log(`[PineEngine][${botId}] ⏸️ AI Status: STANDING ASIDE (${c.AI_REASONING || 'Market condition unfavorable'}) — skipping trade entry`);
-        } else {
-            console.warn(`[PineEngine][${botId}] No Pine Script — skipping`);
-        }
-        return;
-    }
-
-    console.log(`[PineEngine][${botId}] ── START ${c.SYMBOL} ${c.IS_AI_MANAGED ? '(AI Managed)' : ''} ──`);
-
     try {
+        // AI Managed Bot: evaluate market regime directly via Gemini across 5m, 15m, 1h, and 4h
+        const isAiDue = !c.LAST_AI_EVALUATION || (!c.PINE_SCRIPT?.trim() && c.CURRENT_STRATEGY_ID !== 'stand_aside') || isAiEvaluationDue(c);
+        if (c.IS_AI_MANAGED && isAiDue) {
+            try {
+                const [baseTfCandles, tf15mCandles, tf1hCandles, tf4hCandles] = await Promise.all([
+                    fetchTimeframeCandles(client, c.SYMBOL, c.TIMEFRAME || '5m'),
+                    fetchTimeframeCandles(client, c.SYMBOL, '15m'),
+                    fetchTimeframeCandles(client, c.SYMBOL, '1h'),
+                    fetchTimeframeCandles(client, c.SYMBOL, '4h'),
+                ]);
+                if (baseTfCandles && baseTfCandles.length) {
+                    await evaluateAndApplyAiStrategy(
+                        c,
+                        baseTfCandles,
+                        tf15mCandles ?? undefined,
+                        tf1hCandles ?? undefined,
+                        tf4hCandles ?? undefined,
+                        logger
+                    );
+                }
+            } catch (evalErr: any) {
+                const evalMsg = `AI Market Evaluation failed: ${evalErr?.message ?? evalErr}`;
+                logger.error(evalMsg);
+            }
+        }
+
+        if (!c.PINE_SCRIPT?.trim()) {
+            if (c.IS_AI_MANAGED && c.CURRENT_STRATEGY_ID === 'stand_aside') {
+                logger.log(`[PineEngine][${botId}] ⏸️ AI Status: STANDING ASIDE (${c.AI_REASONING || 'Market condition unfavorable'}) — skipping trade entry`);
+            } else {
+                logger.warn(`[PineEngine][${botId}] No Pine Script — skipping`);
+            }
+            return;
+        }
+
+        logger.log(`[PineEngine][${botId}] ── START ${c.SYMBOL} ${c.IS_AI_MANAGED ? '(AI Managed)' : ''} ──`);
+
         // 1. Sync leverage (non-blocking)
         await syncLeverage(client, c);
 
         // 2. Identify all required timeframes (Multi-Timeframe support)
         const requiredTfs = extractRequestedTimeframes(c.PINE_SCRIPT, c.TIMEFRAME);
-        console.log(`[PineEngine][${botId}] Required Timeframes: ${requiredTfs.join(', ')}`);
+        logger.log(`[PineEngine][${botId}] Required Timeframes: ${requiredTfs.join(', ')}`);
 
         // 3. Fetch candles for all timeframes in parallel
         const candleMap = new Map<string, Candle[]>();
@@ -195,20 +199,20 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
         const baseNormTf = normalizeTimeframe(c.TIMEFRAME);
         const baseCandles = candleMap.get(baseNormTf);
         if (!baseCandles || !baseCandles.length) {
-            console.log(`[PineEngine][${botId}] No base candles (${c.TIMEFRAME}) — skip`);
+            logger.log(`[PineEngine][${botId}] No base candles (${c.TIMEFRAME}) — skip`);
             return;
         }
 
-        console.log(`[PineEngine][${botId}] Loaded ${candleMap.size} TF series (Base ${baseNormTf}: ${baseCandles.length} bars)`);
+        logger.log(`[PineEngine][${botId}] Loaded ${candleMap.size} TF series (Base ${baseNormTf}: ${baseCandles.length} bars)`);
 
         // 4. Load trade state
         const state = await getOrCreateState(c);
 
         // 5. Handle open/pending trade
         if (state.entryOrderId && state.tradeOutcome === 'pending') {
-            const { isStillOpen } = await handleOpenTrade(client, state, c);
+            const { isStillOpen } = await handleOpenTrade(client, state, c, logger);
             if (isStillOpen) {
-                console.log(`[PineEngine][${botId}] Trade still open — no new entry`);
+                logger.log(`[PineEngine][${botId}] Trade still open — no new entry`);
                 return;
             }
             await getOrCreateState(c);
@@ -217,39 +221,56 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
         // 6. Safety check (Daily loss limit, Weekend filter, Concurrent trades)
         const safetyCheck = await canEnterTrade(state, c);
         if (!safetyCheck.ok) {
-            console.log(`[PineEngine][${botId}] Safety check failed: ${safetyCheck.reason}`);
+            logger.log(`[PineEngine][${botId}] Safety check failed: ${safetyCheck.reason}`);
             return;
         }
 
-        // 7. Evaluate Pine Script (with full MTF map)
+        // 7. Compute & Log Multi-Timeframe Technical Indicator Snapshot
+        const triggerSnapshot = computeMarketSnapshot(
+            baseCandles,
+            candleMap.get('15m') || candleMap.get('15'),
+            candleMap.get('1h') || candleMap.get('60'),
+            candleMap.get('4h') || candleMap.get('240')
+        );
+
+        logger.addLog(`[Technical Indicator Snapshot @ Trigger]`);
+        logger.addLog(`  5M: Price=$${triggerSnapshot.currentPrice.toFixed(2)} | 24h=${triggerSnapshot.change24h}% | RSI=${triggerSnapshot.rsi} | EMA=${triggerSnapshot.emaTrend} | ADX=${triggerSnapshot.adx} (+DI:${triggerSnapshot.diPlus}, -DI:${triggerSnapshot.diMinus}) | ATR=${triggerSnapshot.atrPercent}% ($${triggerSnapshot.atr}) | BBW=${triggerSnapshot.bbWidth} (Squeeze: ${triggerSnapshot.isBbSqueeze}) | VolRatio=${triggerSnapshot.volumeRatio}x`);
+        logger.addLog(`  15M: Trend=${triggerSnapshot.htf15mTrend} | RSI=${triggerSnapshot.htf15mRsi}`);
+        logger.addLog(`  1H: Trend=${triggerSnapshot.htf1hTrend} | RSI=${triggerSnapshot.htf1hRsi}`);
+        logger.addLog(`  4H: MacroTrend=${triggerSnapshot.htf4hTrend}`);
+
+        // 8. Evaluate Pine Script (with full MTF map)
         const signal = evaluatePineScript(c.PINE_SCRIPT, candleMap, c.TIMEFRAME);
-        console.log(`[PineEngine][${botId}] Signal: action=${signal.action} score=${signal.score ?? 'N/A'} comment="${signal.comment ?? ''}"`);
+        logger.setScore(signal.score);
+        const signalLog = `Signal: action=${signal.action} score=${signal.score ?? 'N/A'} comment="${signal.comment ?? ''}"`;
+        logger.log(`[PineEngine][${botId}] ${signalLog}`);
 
         if (signal.action === 'none' || signal.action === 'close') {
             if (signal.action === 'close' && state.entryOrderId) {
-                console.log(`[PineEngine][${botId}] Close signal — position management active`);
+                logger.log(`[PineEngine][${botId}] Close signal — position management active`);
             }
             return;
         }
 
-        // 8. Min Score Gating Check
+        // 9. Min Score Gating Check
         const minScoreThreshold = Math.max(0, c.MIN_SCORE || 50);
         if (signal.score !== undefined && signal.score < minScoreThreshold) {
-            console.log(`[PineEngine][${botId}] Signal suppressed: score (${signal.score}) < required minScore (${minScoreThreshold})`);
+            logger.log(`[PineEngine][${botId}] Signal suppressed: score (${signal.score}) < required minScore (${minScoreThreshold})`);
             return;
         }
 
-        // 9. Execute trade
+        // 10. Execute trade
         const side = signal.action === 'buy' ? 'buy' : 'sell';
-        await executeTrade(client, c, side, state, signal.tp, signal.sl);
+        await executeTrade(client, c, side, state, signal.tp, signal.sl, logger);
 
     } catch (err: any) {
         const msg = String(err?.message ?? err);
-        console.error(`[PineEngine][${botId}] Error: ${msg}`);
+        logger.error(`[PineEngine][${botId}] Error: ${msg}`);
         await handleBotError(botId, msg);
+    } finally {
+        logger.log(`[PineEngine][${botId}] ── DONE ──`);
+        await logger.finalize();
     }
-
-    console.log(`[PineEngine][${botId}] ── DONE ──`);
 }
 
 async function handleBotError(botId: string, message: string): Promise<void> {

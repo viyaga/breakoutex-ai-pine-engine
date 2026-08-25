@@ -117,7 +117,8 @@ export async function executeTrade(
     side: OrderSide,
     state: any,
     signalTp?: number,
-    signalSl?: number
+    signalSl?: number,
+    logger?: { addLog: (msg: string) => void }
 ): Promise<void> {
     const botId = c.id;
 
@@ -139,16 +140,22 @@ export async function executeTrade(
     const maxQty     = Math.max(1, Math.floor((Math.max(c.MIN_TRADE_SIZE, c.MAX_TRADE_SIZE) * c.LEVERAGE) / (markPrice * (c.LOT_SIZE || 1))));
 
     if (qty > maxQty) {
-        log(botId, `Qty ${qty} exceeds maxQty ${maxQty}. Capping.`);
+        const capMsg = `Qty ${qty} exceeds maxQty ${maxQty}. Capping.`;
+        if (logger) logger.addLog(capMsg);
+        log(botId, capMsg);
     }
     const finalQty = Math.min(qty, maxQty);
 
     if (finalQty <= 0) throw new Error('Calculated quantity is 0');
 
-    log(botId, `Placing ${side.toUpperCase()} entry — qty=${finalQty} lots, price≈${markPrice}`);
+    const entryPrepMsg = `Placing ${side.toUpperCase()} entry — qty=${finalQty} lots, expected price≈$${markPrice.toFixed(2)}`;
+    if (logger) logger.addLog(entryPrepMsg);
+    log(botId, entryPrepMsg);
 
     if (c.DRY_RUN) {
-        log(botId, '[DRY RUN] Skipping actual order placement');
+        const dryMsg = '[DRY RUN] Skipping actual order placement';
+        if (logger) logger.addLog(dryMsg);
+        log(botId, dryMsg);
         return;
     }
 
@@ -159,11 +166,27 @@ export async function executeTrade(
     if (!entryId) throw new Error('Entry order did not return an ID');
 
     const fillPrice = Number(entryRes?.result?.average_fill_price ?? markPrice);
-    log(botId, `Entry placed: id=${entryId} fillPrice=${fillPrice}`);
+
+    // Calculate slippage
+    const rawSlippagePct = side === 'buy'
+        ? ((fillPrice - markPrice) / markPrice) * 100
+        : ((markPrice - fillPrice) / markPrice) * 100;
+    const slippageBps = Math.round(rawSlippagePct * 100);
+
+    const fillMsg = `Entry Order Filled: ID=${entryId} | FillPrice=$${fillPrice.toFixed(2)} (Expected Mark=$${markPrice.toFixed(2)} | Slippage=${slippageBps > 0 ? '+' : ''}${slippageBps} bps / ${rawSlippagePct.toFixed(3)}%)`;
+    if (logger) logger.addLog(fillMsg);
+    log(botId, fillMsg);
 
     // ── Compute TP / SL ───────────────────────────────────────────
     const { tp, sl, tpLimit } = computeTPSL(fillPrice, side, c, signalTp, signalSl);
-    log(botId, `TP trigger=${tp} TP limit=${tpLimit} SL trigger=${sl}`);
+
+    const tpDistPct = Math.abs((tp - fillPrice) / fillPrice) * 100;
+    const slDistPct = Math.abs((fillPrice - sl) / fillPrice) * 100;
+    const effectiveRR = slDistPct > 0 ? Number((tpDistPct / slDistPct).toFixed(2)) : 1.5;
+
+    const tpslMsg = `Computed Brackets: TP=$${tp.toFixed(2)} (+${tpDistPct.toFixed(2)}%) [Limit=$${tpLimit.toFixed(2)}] | SL=$${sl.toFixed(2)} (-${slDistPct.toFixed(2)}%) | Effective R:R=${effectiveRR}:1`;
+    if (logger) logger.addLog(tpslMsg);
+    log(botId, tpslMsg);
 
     // ── Bracket order ─────────────────────────────────────────────
     const bracket = await client.placeBracketOrder({
@@ -177,8 +200,10 @@ export async function executeTrade(
     });
 
     if (!bracket.success) throw new Error('Failed to place TP/SL bracket orders');
-    log(botId, `Bracket placed: TP_ID=${bracket.tpId} SL_ID=${bracket.slId}`);
 
+    const bracketMsg = `Bracket Orders Placed on Exchange: TP_ID=${bracket.tpId} | SL_ID=${bracket.slId}`;
+    if (logger) logger.addLog(bracketMsg);
+    log(botId, bracketMsg);
 
     // ── Save state ────────────────────────────────────────────────
     await PineTradeState.findByIdAndUpdate(state._id, {
@@ -203,5 +228,8 @@ export async function executeTrade(
         { upsert: true }
     );
 
-    log(botId, `✓ TRADE COMPLETE — ${side.toUpperCase()} ${finalQty}L @${fillPrice} | TP=${tp} SL=${sl}`);
+    const actualNotional = finalQty * (c.LOT_SIZE || 1) * fillPrice;
+    const completeMsg = `✓ TRADE COMPLETE — ${side.toUpperCase()} ${finalQty}L ($${actualNotional.toFixed(2)} Notional) @$${fillPrice.toFixed(2)} | TP=$${tp.toFixed(2)} SL=$${sl.toFixed(2)} | R:R=${effectiveRR}:1`;
+    if (logger) logger.addLog(completeMsg);
+    log(botId, completeMsg);
 }

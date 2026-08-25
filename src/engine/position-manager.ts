@@ -28,7 +28,8 @@ export async function syncLeverage(client: IExchangeClient, c: PineBotConfig): P
 export async function handleOpenTrade(
     client: IExchangeClient,
     state: IPineTradeState,
-    c: PineBotConfig
+    c: PineBotConfig,
+    logger?: { addLog: (msg: string) => void }
 ): Promise<{ state: IPineTradeState; isStillOpen: boolean }> {
     const botId = c.id;
 
@@ -37,12 +38,16 @@ export async function handleOpenTrade(
     // 1. Get entry order status
     const entryOrder = await client.getOrder(state.entryOrderId, c.SYMBOL);
     if (!entryOrder) {
-        log(botId, `Could not fetch entry order ${state.entryOrderId}`);
+        const msg = `[PositionManager] Could not fetch entry order ${state.entryOrderId}`;
+        if (logger) logger.addLog(msg);
+        log(botId, msg);
         return { state, isStillOpen: true };
     }
 
     const entryStatus = (entryOrder.state ?? entryOrder.status ?? '').toUpperCase();
-    log(botId, `Entry order ${state.entryOrderId} status: ${entryStatus}`);
+    const statusMsg = `[PositionManager] Entry order ${state.entryOrderId} status: ${entryStatus}`;
+    if (logger) logger.addLog(statusMsg);
+    log(botId, statusMsg);
 
     // If entry not filled yet, wait
     if (entryStatus === 'OPEN' || entryStatus === 'PENDING') {
@@ -51,7 +56,9 @@ export async function handleOpenTrade(
 
     // If entry cancelled/failed, reset state
     if (entryStatus === 'CANCELLED') {
-        log(botId, 'Entry order cancelled. Resetting state.');
+        const cancelMsg = '[PositionManager] Entry order cancelled on exchange. Resetting trade state.';
+        if (logger) logger.addLog(cancelMsg);
+        log(botId, cancelMsg);
         await PineTradeState.findByIdAndUpdate((state as any)._id, {
             tradeOutcome: 'cancelled',
             status: 'closed',
@@ -97,24 +104,36 @@ export async function handleOpenTrade(
         }
     }
 
-
-    // Compute PnL
+    // Compute PnL and fee accounting
     const qty  = Number(state.quantity ?? 0);
     const lot  = c.LOT_SIZE || 1;
     const side = state.side ?? 'buy';
+    const notionalUSD = entryPrice * qty * lot;
 
     const rawPnl = side === 'buy'
         ? (exitPrice - entryPrice) * qty * lot
         : (entryPrice - exitPrice) * qty * lot;
 
     const feePercent = c.ESTIMATED_FEE_PERCENT / 100;
-    const fees = entryPrice * qty * lot * feePercent * 2;
+    const fees = notionalUSD * feePercent * 2; // round-trip entry + exit
     const netPnl = rawPnl - fees;
+    const returnPct = notionalUSD > 0 ? (netPnl / notionalUSD) * 100 : 0;
 
     const newAllTimePnl = (state.allTimePnl ?? 0) + netPnl;
     const newDailyPnl   = (state.dailyPnl   ?? 0) + netPnl;
 
-    log(botId, `Trade closed: outcome=${outcome} exitPrice=${exitPrice} pnl=${netPnl.toFixed(2)}`);
+    // Calculate holding duration
+    const now = new Date();
+    const entryTime = state.entryFilledAt ? new Date(state.entryFilledAt).getTime() : now.getTime();
+    const durationMs = Math.max(0, now.getTime() - entryTime);
+    const durationMins = Math.floor(durationMs / 60000);
+    const durationSecs = Math.floor((durationMs % 60000) / 1000);
+    const durationStr = `${durationMins}m ${durationSecs}s`;
+
+    const settlementLog = `[TradeSettlement] 🎯 TRADE CLOSED: Outcome=${outcome.toUpperCase()} (${outcome === 'win' ? 'TP Hit' : 'SL Hit'}) | Side=${side.toUpperCase()} ${qty}L | Entry=$${entryPrice.toFixed(2)} -> Exit=$${exitPrice.toFixed(2)} (${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(2)}%) | Duration=${durationStr} | GrossPnL=$${rawPnl.toFixed(2)} | Fees=$${fees.toFixed(2)} | NetPnL=$${netPnl.toFixed(2)} | NewDailyPnL=$${newDailyPnl.toFixed(2)} | AllTimePnL=$${newAllTimePnl.toFixed(2)}`;
+
+    if (logger) logger.addLog(settlementLog);
+    log(botId, settlementLog);
 
     await PineTradeState.findByIdAndUpdate((state as any)._id, {
         tradeOutcome: outcome,
@@ -125,7 +144,7 @@ export async function handleOpenTrade(
         allTimePnl: newAllTimePnl,
         cumulativeFees: (state.cumulativeFees ?? 0) + fees,
         allTimeFees: (state.allTimeFees ?? 0) + fees,
-        lastTradeSettledAt: new Date(),
+        lastTradeSettledAt: now,
     });
 
     // Push PnL update to Payload
