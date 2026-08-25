@@ -1,4 +1,4 @@
-﻿// ================================================================
+// ================================================================
 // Manual trigger route — POST /api/pine/trigger
 // Useful for testing a bot without waiting for the cron
 // ================================================================
@@ -7,6 +7,8 @@ import { Router, Request, Response } from 'express';
 import { runPineCycle, clearCycleCache } from '../engine/index';
 import { fetchActivePineBots } from '../engine/config-fetcher';
 import { evaluatePineScript } from '../pine/interpreter';
+import { backtestAllStrategies, backtestStrategy } from '../pine/backtester';
+import { getAllStrategies, getStrategyById } from '../pine/strategy-library';
 import { PineBotConfig } from '../config/types';
 import env from '../config/env';
 
@@ -60,6 +62,45 @@ router.post('/evaluate', (req: Request, res: Response) => {
         return void res.json({ success: true, signal });
     } catch (err: any) {
         return void res.status(400).json({ success: false, error: err.message });
+    }
+});
+
+/**
+ * POST /api/pine/backtest
+ * Body: { strategyId?: string, timeframe?: string, windowBars?: number, candles?: Record<string, Candle[]> }
+ */
+router.post('/backtest', (req: Request, res: Response) => {
+    const { strategyId, timeframe = '5m', windowBars = 500, candles } = req.body as {
+        strategyId?: string;
+        timeframe?: string;
+        windowBars?: number;
+        candles?: Record<string, any[]>;
+    };
+
+    const candleMap = new Map<string, any[]>();
+    if (candles && typeof candles === 'object') {
+        for (const [tf, list] of Object.entries(candles)) {
+            candleMap.set(tf, list);
+        }
+    } else {
+        candleMap.set(timeframe, generateSampleCandles());
+    }
+
+    try {
+        if (strategyId) {
+            const strat = getStrategyById(strategyId);
+            if (!strat) {
+                return void res.status(404).json({ success: false, error: `Strategy '${strategyId}' not found` });
+            }
+            const result = backtestStrategy(strat, candleMap, timeframe, windowBars);
+            return void res.json({ success: true, result });
+        } else {
+            const allStrats = getAllStrategies();
+            const results = backtestAllStrategies(allStrats, candleMap, timeframe, windowBars);
+            return void res.json({ success: true, count: results.length, results });
+        }
+    } catch (err: any) {
+        return void res.status(500).json({ success: false, error: err.message });
     }
 });
 

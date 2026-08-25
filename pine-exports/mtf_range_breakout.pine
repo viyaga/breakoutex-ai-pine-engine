@@ -1,0 +1,93 @@
+// ================================================================
+// Strategy: MTF Consolidation Range Breakout
+// ID: mtf_range_breakout
+// Best Regimes: low_volatility_consolidation, high_volatility_breakout
+// Timeframe: 5m
+// Target TP: 2.5% | Target SL: 1%
+// ================================================================
+
+//@version=6
+
+strategy(
+     "MTF Consolidation Range Breakout",
+     overlay = true,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.05
+)
+
+// ================================================================
+// 15M RANGE
+// ================================================================
+
+rangeHigh = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.highest(high, 24)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+rangeLow = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.lowest(low, 24)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+rangeSize = rangeHigh - rangeLow
+
+atr15 = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.atr(14)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+compressed =
+     rangeSize < atr15 * 10
+
+// ================================================================
+// 5M
+// ================================================================
+
+volumeAverage = ta.sma(volume, 20)
+
+volumeExpansion =
+     volume > volumeAverage * 1.15
+
+momentum = ta.mom(close, 10)
+
+longCondition =
+     compressed and
+     ta.crossover(close, rangeHigh) and
+     momentum > 0 and
+     volumeExpansion
+
+shortCondition =
+     compressed and
+     ta.crossunder(close, rangeLow) and
+     momentum < 0 and
+     volumeExpansion
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
+
+if strategy.position_size > 0
+    strategy.exit(
+         "Long Exit",
+         "Long",
+         stop = strategy.position_avg_price * 0.990,
+         limit = strategy.position_avg_price * 1.025
+    )
+
+if strategy.position_size < 0
+    strategy.exit(
+         "Short Exit",
+         "Short",
+         stop = strategy.position_avg_price * 1.010,
+         limit = strategy.position_avg_price * 0.975
+    )

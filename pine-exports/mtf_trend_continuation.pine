@@ -1,0 +1,142 @@
+// ================================================================
+// Strategy: MTF EMA Trend Continuation
+// ID: mtf_trend_continuation
+// Best Regimes: trending_bullish, trending_bearish
+// Timeframe: 5m
+// Target TP: 2.5% | Target SL: 1%
+// ================================================================
+
+//@version=6
+
+strategy(
+     "MTF EMA Trend Continuation",
+     overlay = true,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.05
+)
+
+// ================================================================
+// INPUTS
+// ================================================================
+
+fastLen = input.int(9, "Fast EMA")
+slowLen = input.int(21, "Slow EMA")
+structureLen = input.int(50, "Structure EMA")
+
+rsiLen = input.int(14, "RSI Length")
+adxLen = input.int(14, "ADX Length")
+
+tpPercent = input.float(2.5, "Take Profit %")
+slPercent = input.float(1.0, "Stop Loss %")
+
+// ================================================================
+// 4H MACRO
+// ================================================================
+
+macroEma50 = request.security(
+     syminfo.tickerid,
+     "240",
+     ta.ema(close, 50)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+macroEma200 = request.security(
+     syminfo.tickerid,
+     "240",
+     ta.ema(close, 200)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+macroBullish = macroEma50 > macroEma200
+macroBearish = macroEma50 < macroEma200
+
+// ================================================================
+// 1H TREND
+// ================================================================
+
+htfClose = request.security(
+     syminfo.tickerid,
+     "60",
+     close[1],
+     lookahead = barmerge.lookahead_on
+)
+
+htfEma50 = request.security(
+     syminfo.tickerid,
+     "60",
+     ta.ema(close, 50)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+htfEma200 = request.security(
+     syminfo.tickerid,
+     "60",
+     ta.ema(close, 200)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+bullTrend =
+     macroBullish and
+     htfClose > htfEma50 and
+     htfEma50 > htfEma200
+
+bearTrend =
+     macroBearish and
+     htfClose < htfEma50 and
+     htfEma50 < htfEma200
+
+// ================================================================
+// 5M ENTRY
+// ================================================================
+
+emaFast = ta.ema(close, fastLen)
+emaSlow = ta.ema(close, slowLen)
+emaStructure = ta.ema(close, structureLen)
+
+rsi = ta.rsi(close, rsiLen)
+
+[diPlus, diMinus, adx] = ta.dmi(adxLen, adxLen)
+
+longCondition =
+     bullTrend and
+     close > emaStructure and
+     ta.crossover(emaFast, emaSlow) and
+     rsi > 52 and
+     rsi < 75 and
+     adx > 20
+
+shortCondition =
+     bearTrend and
+     close < emaStructure and
+     ta.crossunder(emaFast, emaSlow) and
+     rsi < 48 and
+     rsi > 25 and
+     adx > 20
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
+
+// ================================================================
+// RISK
+// ================================================================
+
+if strategy.position_size > 0
+    strategy.exit(
+         "Long Exit",
+         "Long",
+         stop = strategy.position_avg_price * (1 - slPercent / 100),
+         limit = strategy.position_avg_price * (1 + tpPercent / 100)
+    )
+
+if strategy.position_size < 0
+    strategy.exit(
+         "Short Exit",
+         "Short",
+         stop = strategy.position_avg_price * (1 + slPercent / 100),
+         limit = strategy.position_avg_price * (1 - tpPercent / 100)
+    )

@@ -1,0 +1,135 @@
+// ================================================================
+// Strategy: MTF EMA Pullback Re-entry
+// ID: mtf_trend_pullback
+// Best Regimes: trending_bullish, trending_bearish
+// Timeframe: 5m
+// Target TP: 2.4% | Target SL: 1%
+// ================================================================
+
+//@version=6
+
+strategy(
+     "MTF EMA Pullback Re-entry",
+     overlay = true,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.05
+)
+
+// ================================================================
+// 4H
+// ================================================================
+
+ema50_4h = request.security(
+     syminfo.tickerid,
+     "240",
+     ta.ema(close, 50)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+ema200_4h = request.security(
+     syminfo.tickerid,
+     "240",
+     ta.ema(close, 200)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+bull4h = ema50_4h > ema200_4h
+bear4h = ema50_4h < ema200_4h
+
+// ================================================================
+// 1H
+// ================================================================
+
+ema50_1h = request.security(
+     syminfo.tickerid,
+     "60",
+     ta.ema(close, 50)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+ema200_1h = request.security(
+     syminfo.tickerid,
+     "60",
+     ta.ema(close, 200)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+bull1h = ema50_1h > ema200_1h
+bear1h = ema50_1h < ema200_1h
+
+// ================================================================
+// 15M STRUCTURE
+// ================================================================
+
+ema20_15 = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.ema(close, 20)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+ema50_15 = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.ema(close, 50)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+bull15 = ema20_15 > ema50_15
+bear15 = ema20_15 < ema50_15
+
+// ================================================================
+// 5M PULLBACK
+// ================================================================
+
+ema21 = ta.ema(close, 21)
+
+rsi = ta.rsi(close, 14)
+
+bullishRejection =
+     low <= ema21 and
+     close > ema21 and
+     close > open
+
+bearishRejection =
+     high >= ema21 and
+     close < ema21 and
+     close < open
+
+longCondition =
+     bull4h and
+     bull1h and
+     bull15 and
+     bullishRejection and
+     rsi > 50
+
+shortCondition =
+     bear4h and
+     bear1h and
+     bear15 and
+     bearishRejection and
+     rsi < 50
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
+
+if strategy.position_size > 0
+    strategy.exit(
+         "Long Exit",
+         "Long",
+         stop = strategy.position_avg_price * 0.990,
+         limit = strategy.position_avg_price * 1.024
+    )
+
+if strategy.position_size < 0
+    strategy.exit(
+         "Short Exit",
+         "Short",
+         stop = strategy.position_avg_price * 1.010,
+         limit = strategy.position_avg_price * 0.976
+    )

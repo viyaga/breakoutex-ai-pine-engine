@@ -1,0 +1,135 @@
+// ================================================================
+// Strategy: MTF Volatility Squeeze Breakout
+// ID: mtf_volatility_squeeze
+// Best Regimes: low_volatility_consolidation, high_volatility_breakout
+// Timeframe: 5m
+// Target TP: 3% | Target SL: 1.2%
+// ================================================================
+
+//@version=6
+
+strategy(
+     "MTF Volatility Squeeze Breakout",
+     overlay = true,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.05
+)
+
+bbLength = input.int(20, "BB Length")
+bbMult = input.float(2.0, "BB Multiplier")
+
+kcLength = input.int(20, "KC Length")
+kcMult = input.float(1.5, "KC Multiplier")
+
+tpPercent = input.float(3.0, "Take Profit %")
+slPercent = input.float(1.2, "Stop Loss %")
+
+// ================================================================
+// 15M CONFIRMED BOLLINGER
+// ================================================================
+
+bbBasis = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.sma(close, bbLength)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+bbDev = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.stdev(close, bbLength)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+bbUpper = bbBasis + bbMult * bbDev
+bbLower = bbBasis - bbMult * bbDev
+
+// ================================================================
+// 15M KELTNER
+// ================================================================
+
+kcBasis = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.ema(close, kcLength)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+kcAtr = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.atr(kcLength)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+kcUpper = kcBasis + kcMult * kcAtr
+kcLower = kcBasis - kcMult * kcAtr
+
+squeezeOn =
+     bbLower > kcLower and
+     bbUpper < kcUpper
+
+// Actual release
+squeezeRelease =
+     squeezeOn[1] and
+     not squeezeOn
+
+// ================================================================
+// 5M MOMENTUM
+// ================================================================
+
+ema9 = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+
+momentum = ta.mom(close, 12)
+
+rsi = ta.rsi(close, 14)
+
+volumeAverage = ta.sma(volume, 20)
+
+volumeExpansion =
+     volume > volumeAverage * 1.20
+
+recentHigh = ta.highest(high, 12)[1]
+recentLow = ta.lowest(low, 12)[1]
+
+longCondition =
+     squeezeRelease and
+     close > recentHigh and
+     ema9 > ema21 and
+     momentum > 0 and
+     rsi > 52 and
+     volumeExpansion
+
+shortCondition =
+     squeezeRelease and
+     close < recentLow and
+     ema9 < ema21 and
+     momentum < 0 and
+     rsi < 48 and
+     volumeExpansion
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
+
+if strategy.position_size > 0
+    strategy.exit(
+         "Long Exit",
+         "Long",
+         stop = strategy.position_avg_price * (1 - slPercent / 100),
+         limit = strategy.position_avg_price * (1 + tpPercent / 100)
+    )
+
+if strategy.position_size < 0
+    strategy.exit(
+         "Short Exit",
+         "Short",
+         stop = strategy.position_avg_price * (1 + slPercent / 100),
+         limit = strategy.position_avg_price * (1 - tpPercent / 100)
+    )

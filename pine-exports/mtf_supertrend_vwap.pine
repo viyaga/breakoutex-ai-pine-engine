@@ -1,0 +1,100 @@
+// ================================================================
+// Strategy: MTF Supertrend VWAP Momentum
+// ID: mtf_supertrend_vwap
+// Best Regimes: trending_bullish, trending_bearish
+// Timeframe: 5m
+// Target TP: 2.5% | Target SL: 1%
+// ================================================================
+
+//@version=6
+
+strategy(
+     "MTF Supertrend VWAP Momentum",
+     overlay = true,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.05
+)
+
+stFactor = input.float(3.0, "Supertrend Factor")
+stLength = input.int(10, "Supertrend ATR")
+
+tpPercent = input.float(2.5, "Take Profit %")
+slPercent = input.float(1.0, "Stop Loss %")
+
+// ================================================================
+// CONFIRMED 1H SUPERTREND
+// ================================================================
+
+supertrendDirection() =>
+    [st, direction] = ta.supertrend(stFactor, stLength)
+    direction[1]
+
+htfDirection = request.security(
+     syminfo.tickerid,
+     "60",
+     supertrendDirection(),
+     lookahead = barmerge.lookahead_on
+)
+
+bullTrend = htfDirection < 0
+bearTrend = htfDirection > 0
+
+// ================================================================
+// 5M
+// ================================================================
+
+ema9 = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+
+vwap = ta.vwap(hlc3)
+
+rsi = ta.rsi(close, 14)
+
+[diPlus, diMinus, adx] = ta.dmi(14, 14)
+
+volumeAverage = ta.sma(volume, 20)
+
+volumeConfirmed =
+     volume > volumeAverage * 1.10
+
+longCondition =
+     bullTrend and
+     close > vwap and
+     ema9 > ema21 and
+     ta.crossover(ema9, ema21) and
+     rsi > 52 and
+     adx > 20 and
+     volumeConfirmed
+
+shortCondition =
+     bearTrend and
+     close < vwap and
+     ema9 < ema21 and
+     ta.crossunder(ema9, ema21) and
+     rsi < 48 and
+     adx > 20 and
+     volumeConfirmed
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
+
+if strategy.position_size > 0
+    strategy.exit(
+         "Long Exit",
+         "Long",
+         stop = strategy.position_avg_price * (1 - slPercent / 100),
+         limit = strategy.position_avg_price * (1 + tpPercent / 100)
+    )
+
+if strategy.position_size < 0
+    strategy.exit(
+         "Short Exit",
+         "Short",
+         stop = strategy.position_avg_price * (1 + slPercent / 100),
+         limit = strategy.position_avg_price * (1 - tpPercent / 100)
+    )

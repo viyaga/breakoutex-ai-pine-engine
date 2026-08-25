@@ -114,6 +114,9 @@ export function evaluatePineScript(
         close(id?: string, comment?: string) {
             ctx.signal = { action: 'close', comment: comment ?? id };
         },
+        close_all(comment?: string) {
+            ctx.signal = { action: 'close', comment: comment ?? 'close_all' };
+        },
         exit(id: string, _from?: string, ...rest: any[]) {
             const first = rest[0];
             if (typeof first === 'object' && first !== null) {
@@ -158,34 +161,47 @@ export function evaluatePineScript(
                 const r = cached(`macd_${f}_${s}_${sig}_${id(src)}`, () => ind.macd(src, f, s, sig));
                 return [wrapSeries(r.macdLine), wrapSeries(r.signalLine), wrapSeries(r.histogram)];
             },
-            bb: (src: number[], p = 20, m = 2) => {
-                const r = cached(`bb_${p}_${m}_${id(src)}`, () => ind.bbands(src, p, m));
-                return [wrapSeries(r.upper), wrapSeries(r.middle), wrapSeries(r.lower)];
-            },
-            bbands: (src: number[], p = 20, m = 2) => {
-                const r = cached(`bb_${p}_${m}_${id(src)}`, () => ind.bbands(src, p, m));
-                return r;
-            },
-            stoch: (src: number[], hi: number[], lo: number[], p: number) =>
-                cached(`stoch_${p}_${id(src)}`, () => wrapSeries(ind.stoch(src, hi, lo, p))),
-            stochRsi: (src: number[], rsiP: number, stochP: number, k: number, d: number) =>
-                cached(`srsi_${rsiP}_${stochP}_${k}_${d}_${id(src)}`, () => {
-                    const r = ind.stochRsi(src, rsiP, stochP, k, d);
-                    return { k: wrapSeries(r.k), d: wrapSeries(r.d) };
-                }),
-            vwap: (_src?: number[]) => cached('vwap', () => wrapSeries(ind.vwap(cList))),
-            adx:  (p?: number) => cached(`adx_${p ?? 14}`, () => {
-                const r = ind.adx(cList, p ?? 14);
-                return [wrapSeries(r.adx), wrapSeries(r.diPlus), wrapSeries(r.diMinus)];
-            }),
-            dmi:  (p?: number) => cached(`adx_${p ?? 14}`, () => {
-                const r = ind.adx(cList, p ?? 14);
-                return [wrapSeries(r.diPlus), wrapSeries(r.diMinus), wrapSeries(r.adx)];
-            }),
-            supertrend: (factor = 3, atrLen = 10) => cached(`st_${factor}_${atrLen}`, () => {
-                const r = ind.supertrend(cList, atrLen, factor);
+            supertrend: (factor = 3, period = 10) => {
+                const r = cached(`st_${factor}_${period}`, () => ind.supertrend(cList, period, factor));
                 return [wrapSeries(r.supertrend), wrapSeries(r.direction)];
-            }),
+            },
+            vwap: () => cached('vwap', () => wrapSeries(ind.vwap(cList))),
+            bollinger: (src: number[], p = 20, mult = 2) => {
+                const r = cached(`bb_${p}_${mult}_${id(src)}`, () => ind.bollinger(src, p, mult));
+                return [wrapSeries(r.middle), wrapSeries(r.upper), wrapSeries(r.lower)];
+            },
+            bb: (src: number[], p = 20, mult = 2) => {
+                const r = cached(`bb_${p}_${mult}_${id(src)}`, () => ind.bollinger(src, p, mult));
+                return [wrapSeries(r.middle), wrapSeries(r.upper), wrapSeries(r.lower)];
+            },
+            bbands: (src: number[], p = 20, mult = 2) => {
+                const r = cached(`bb_${p}_${mult}_${id(src)}`, () => ind.bollinger(src, p, mult));
+                return [wrapSeries(r.middle), wrapSeries(r.upper), wrapSeries(r.lower)];
+            },
+            donchian: (p = 20) => {
+                const r = cached(`don_${p}`, () => ind.donchian(cList, p));
+                return [wrapSeries(r.upper), wrapSeries(r.lower), wrapSeries(r.middle)];
+            },
+            keltner: (src: number[], p = 20, mult = 1.5, atrP = 10) => {
+                const r = cached(`kc_${p}_${mult}_${atrP}_${id(src)}`, () => ind.keltner(cList, p, mult, atrP));
+                return [wrapSeries(r.upper), wrapSeries(r.lower), wrapSeries(r.middle)];
+            },
+            stoch: (src: number[], high: number[], low: number[], p = 14) =>
+                wrapSeries(ind.stoch(high, low, src, p)),
+            stochRsi: (src: number[], rsiP = 14, stochP = 14, k = 3, d = 3) => {
+                const r = cached(`srsi_${rsiP}_${stochP}_${k}_${d}_${id(src)}`, () => ind.stochRsi(src, rsiP, stochP, k, d));
+                return [wrapSeries(r.k), wrapSeries(r.d)];
+            },
+            mfi: (src: number[], vol: number[], p = 14) =>
+                wrapSeries(ind.mfi(cList, p)),
+            adx: (p = 14) => {
+                const r = cached(`adx_${p}`, () => ind.adx(cList, p));
+                return [wrapSeries(r.adx), wrapSeries(r.diPlus), wrapSeries(r.diMinus)];
+            },
+            dmi: (p = 14, _adxP = 14) => {
+                const r = cached(`adx_${p}`, () => ind.adx(cList, p));
+                return [wrapSeries(r.diPlus), wrapSeries(r.diMinus), wrapSeries(r.adx)];
+            },
             pivothigh: (src: number[], lb: number, rb: number) => wrapSeries(ind.pivothigh(src, lb, rb)),
             pivotlow:  (src: number[], lb: number, rb: number) => wrapSeries(ind.pivotlow(src, lb, rb)),
             highest:  (src: number[], p: number) => wrapSeries(ind.highest(src, p)),
@@ -214,22 +230,27 @@ export function evaluatePineScript(
 
     const ta = buildTaNamespace(candles);
 
-    // ── request namespace (Multi-Timeframe MTF support) ───────────
+    // ── request namespace (Multi-Timeframe MTF support with strict lookahead guard) ───────────
     const request = {
         security(_sym: string, tf: string | number, exprFn: any) {
             const normTf = normalizeTimeframe(tf);
-            const htfCandles = candleMap.get(normTf) || candles;
+            const rawHtfCandles = candleMap.get(normTf) || candles;
 
-            const htfOpen   = wrapSeries(htfCandles.map(c => c.open));
-            const htfHigh   = wrapSeries(htfCandles.map(c => c.high));
-            const htfLow    = wrapSeries(htfCandles.map(c => c.low));
-            const htfClose  = wrapSeries(htfCandles.map(c => c.close));
-            const htfVolume = wrapSeries(htfCandles.map(c => c.volume));
-            const htfHL2    = wrapSeries(htfCandles.map(c => (c.high + c.low) / 2));
-            const htfHLC3   = wrapSeries(htfCandles.map(c => (c.high + c.low + c.close) / 3));
-            const htfOHLC4  = wrapSeries(htfCandles.map(c => (c.open + c.high + c.low + c.close) / 4));
-            const htfLast   = htfCandles.length - 1;
-            const htfTa     = buildTaNamespace(htfCandles);
+            // Enforce strict zero-lookahead: only include HTF candles that closed at or before the current base bar timestamp
+            const currentTs = candles[candles.length - 1]?.timestamp ?? Date.now();
+            const htfCandles = rawHtfCandles.filter(c => c.timestamp <= currentTs);
+            const effectiveCandles = htfCandles.length > 0 ? htfCandles : rawHtfCandles.slice(0, 1);
+
+            const htfOpen   = wrapSeries(effectiveCandles.map(c => c.open));
+            const htfHigh   = wrapSeries(effectiveCandles.map(c => c.high));
+            const htfLow    = wrapSeries(effectiveCandles.map(c => c.low));
+            const htfClose  = wrapSeries(effectiveCandles.map(c => c.close));
+            const htfVolume = wrapSeries(effectiveCandles.map(c => c.volume));
+            const htfHL2    = wrapSeries(effectiveCandles.map(c => (c.high + c.low) / 2));
+            const htfHLC3   = wrapSeries(effectiveCandles.map(c => (c.high + c.low + c.close) / 3));
+            const htfOHLC4  = wrapSeries(effectiveCandles.map(c => (c.open + c.high + c.low + c.close) / 4));
+            const htfLast   = effectiveCandles.length - 1;
+            const htfTa     = buildTaNamespace(effectiveCandles);
 
             if (typeof exprFn === 'function') {
                 const res = exprFn(

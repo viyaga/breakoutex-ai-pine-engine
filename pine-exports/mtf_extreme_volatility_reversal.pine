@@ -1,0 +1,89 @@
+// ================================================================
+// Strategy: MTF Extreme Volatility Reversal
+// ID: mtf_extreme_volatility_reversal
+// Best Regimes: high_volatility_breakout, ranging_choppy
+// Timeframe: 5m
+// Target TP: 2% | Target SL: 1.2%
+// ================================================================
+
+//@version=6
+
+strategy(
+     "MTF Extreme Volatility Reversal",
+     overlay = true,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.05
+)
+
+// ================================================================
+// 15M EXTREME CONDITION
+// ================================================================
+
+rsi15 = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.rsi(close, 14)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+atr15 = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.atr(14)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+atrAverage15 = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.sma(ta.atr(14), 50)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+extremeVolatility =
+     atr15 > atrAverage15 * 1.50
+
+// ================================================================
+// 5M
+// ================================================================
+
+rsi = ta.rsi(close, 14)
+
+ema9 = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+
+bearishReversal =
+     extremeVolatility and
+     rsi15 > 70 and
+     rsi > 70 and
+     ta.crossunder(ema9, ema21)
+
+bullishReversal =
+     extremeVolatility and
+     rsi15 < 30 and
+     rsi < 30 and
+     ta.crossover(ema9, ema21)
+
+if bullishReversal
+    strategy.entry("Long", strategy.long)
+
+if bearishReversal
+    strategy.entry("Short", strategy.short)
+
+if strategy.position_size > 0
+    strategy.exit(
+         "Long Exit",
+         "Long",
+         stop = strategy.position_avg_price * 0.988,
+         limit = strategy.position_avg_price * 1.020
+    )
+
+if strategy.position_size < 0
+    strategy.exit(
+         "Short Exit",
+         "Short",
+         stop = strategy.position_avg_price * 1.012,
+         limit = strategy.position_avg_price * 0.980
+    )

@@ -1,0 +1,88 @@
+// ================================================================
+// Strategy: MTF Failed Breakout Reversal
+// ID: mtf_failed_breakout
+// Best Regimes: ranging_choppy, high_volatility_breakout
+// Timeframe: 5m
+// Target TP: 1.8% | Target SL: 0.8%
+// ================================================================
+
+//@version=6
+
+strategy(
+     "MTF Failed Breakout Reversal",
+     overlay = true,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.05
+)
+
+// ================================================================
+// 15M RANGE
+// ================================================================
+
+rangeHigh = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.highest(high, 20)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+rangeLow = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.lowest(low, 20)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+// ================================================================
+// 5M FAILED BREAKOUT
+// ================================================================
+
+rsi = ta.rsi(close, 14)
+
+volumeAverage = ta.sma(volume, 20)
+
+// Price trades above resistance
+bullTrap =
+     high > rangeHigh and
+     close < rangeHigh and
+     close < open
+
+// Price trades below support
+bearTrap =
+     low < rangeLow and
+     close > rangeLow and
+     close > open
+
+shortCondition =
+     bullTrap and
+     rsi < 60 and
+     volume > volumeAverage
+
+longCondition =
+     bearTrap and
+     rsi > 40 and
+     volume > volumeAverage
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+
+if strategy.position_size > 0
+    strategy.exit(
+         "Long Exit",
+         "Long",
+         stop = strategy.position_avg_price * 0.992,
+         limit = strategy.position_avg_price * 1.018
+    )
+
+if strategy.position_size < 0
+    strategy.exit(
+         "Short Exit",
+         "Short",
+         stop = strategy.position_avg_price * 1.008,
+         limit = strategy.position_avg_price * 0.982
+    )

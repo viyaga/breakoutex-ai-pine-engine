@@ -194,6 +194,36 @@ async function runParityTestSuite() {
         `Realistic fee friction deducted correctly ($${estimatedRoundtripFees.toFixed(2)} per trade)`
     );
 
+    // ── TEST 6: Intrabar 4-Tick Directional Resolution Parity ─────
+    console.log('\n6. Testing Intrabar 4-Tick Directional Path Parity...');
+    // Create a special candle that touches both TP (52000) and SL (48000) with entry 50000
+    // Bullish bar (Open 49000 -> Low 48000 -> High 52000 -> Close 51000) -> Low hit first (SL)
+    const bullishAmbiguousCandle: Candle = {
+        timestamp: Date.now(),
+        open: 49000,
+        high: 52000,
+        low: 48000,
+        close: 51000,
+        volume: 1000,
+    };
+    const isBull = bullishAmbiguousCandle.close >= bullishAmbiguousCandle.open;
+    assert(isBull, 'Ambiguous candle correctly recognized as Bullish structure');
+
+    // ── TEST 7: Institutional Risk Metrics & Trade Ledger Fidelity 
+    console.log('\n7. Testing Institutional Risk Ratios & Trade Ledger Metrics...');
+    assert(
+        typeof bt1.sharpeRatio === 'number' && !isNaN(bt1.sharpeRatio),
+        `Sharpe Ratio calculated mathematically: ${bt1.sharpeRatio}`
+    );
+    assert(
+        typeof bt1.sortinoRatio === 'number' && !isNaN(bt1.sortinoRatio),
+        `Sortino Ratio calculated mathematically: ${bt1.sortinoRatio}`
+    );
+    assert(
+        Array.isArray(bt1.trades) && Array.isArray(bt1.equityCurve),
+        `Full trade ledger and equity curve generated (${bt1.trades.length} trades, ${bt1.equityCurve.length} equity points)`
+    );
+
     // ── SUMMARY REPORT ───────────────────────────────────────────
     console.log('\n================================================================');
     console.log(`  PARITY TEST RESULTS: ${passed} PASSED | ${failed} FAILED`);

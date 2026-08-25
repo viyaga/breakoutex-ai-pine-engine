@@ -1,4 +1,4 @@
-﻿import { Candle } from '../config/types';
+import { Candle } from '../config/types';
 
 // ================================================================
 // PINE SCRIPT INDICATOR LIBRARY  (v2 — audited & fixed)
@@ -161,6 +161,57 @@ export function bbands(src: number[], period = 20, mult = 2): {
         percentB.push((src[i] - l) / (u - l));
     }
     return { upper, middle, lower, width, percentB };
+}
+
+export const bollinger = bbands;
+
+// ── Donchian Channels ─────────────────────────────────────────────
+export function donchian(candles: Candle[], period = 20): {
+    upper: number[]; lower: number[]; middle: number[];
+} {
+    const highs = candles.map(c => c.high);
+    const lows = candles.map(c => c.low);
+    const upper = highest(highs, period);
+    const lower = lowest(lows, period);
+    const middle = upper.map((u, i) => (isNaN(u) || isNaN(lower[i])) ? NaN : (u + lower[i]) / 2);
+    return { upper, lower, middle };
+}
+
+// ── Keltner Channels ──────────────────────────────────────────────
+export function keltner(candles: Candle[], period = 20, mult = 1.5, atrPeriod = 10): {
+    upper: number[]; lower: number[]; middle: number[];
+} {
+    const closes = candles.map(c => c.close);
+    const middle = ema(closes, period);
+    const atrArr = atr(candles, atrPeriod);
+    const upper = middle.map((m, i) => isNaN(m) || isNaN(atrArr[i]) ? NaN : m + mult * atrArr[i]);
+    const lower = middle.map((m, i) => isNaN(m) || isNaN(atrArr[i]) ? NaN : m - mult * atrArr[i]);
+    return { upper, lower, middle };
+}
+
+// ── Money Flow Index (MFI) ───────────────────────────────────────
+export function mfi(candles: Candle[], period = 14): number[] {
+    const n = candles.length;
+    const tp = candles.map(c => (c.high + c.low + c.close) / 3);
+    const rmf = tp.map((p, i) => p * candles[i].volume);
+
+    const posFlow: number[] = new Array(n).fill(0);
+    const negFlow: number[] = new Array(n).fill(0);
+
+    for (let i = 1; i < n; i++) {
+        if (tp[i] > tp[i - 1]) posFlow[i] = rmf[i];
+        else if (tp[i] < tp[i - 1]) negFlow[i] = rmf[i];
+    }
+
+    const posSum = sum(posFlow, period);
+    const negSum = sum(negFlow, period);
+
+    return posSum.map((pos, i) => {
+        const neg = negSum[i];
+        if (isNaN(pos) || isNaN(neg) || neg === 0) return 50;
+        const mr = pos / neg;
+        return 100 - (100 / (1 + mr));
+    });
 }
 
 // ── VWAP (resets at UTC midnight each day) ───────────────────────

@@ -1,0 +1,169 @@
+// ================================================================
+// Strategy: MTF ATR Range Expansion Breakout
+// ID: mtf_atr_range_expansion
+// Best Regimes: low_volatility_consolidation, high_volatility_breakout, trending_bullish, trending_bearish
+// Timeframe: 5m
+// Target TP: 2.8% | Target SL: 1.1%
+// ================================================================
+
+//@version=6
+
+strategy(
+     "MTF ATR Range Expansion Breakout",
+     overlay = true,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.05
+)
+
+rangeLength = input.int(20, "15M Range Length")
+
+atrLength = input.int(14, "ATR Length")
+atrAverageLength = input.int(50, "ATR Average")
+
+volumeMultiplier = input.float(1.15, "Volume Multiplier")
+
+tpPercent = input.float(2.8, "Take Profit %")
+slPercent = input.float(1.1, "Stop Loss %")
+
+// ================================================================
+// 4H
+// ================================================================
+
+ema50_4h = request.security(
+     syminfo.tickerid,
+     "240",
+     ta.ema(close, 50)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+ema200_4h = request.security(
+     syminfo.tickerid,
+     "240",
+     ta.ema(close, 200)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+bull4h = ema50_4h > ema200_4h
+bear4h = ema50_4h < ema200_4h
+
+// ================================================================
+// 1H
+// ================================================================
+
+close1h = request.security(
+     syminfo.tickerid,
+     "60",
+     close[1],
+     lookahead = barmerge.lookahead_on
+)
+
+ema50_1h = request.security(
+     syminfo.tickerid,
+     "60",
+     ta.ema(close, 50)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+ema200_1h = request.security(
+     syminfo.tickerid,
+     "60",
+     ta.ema(close, 200)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+bull1h =
+     close1h > ema50_1h and
+     ema50_1h > ema200_1h
+
+bear1h =
+     close1h < ema50_1h and
+     ema50_1h < ema200_1h
+
+// ================================================================
+// 15M RANGE
+// ================================================================
+
+rangeHigh = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.highest(high, rangeLength)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+rangeLow = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.lowest(low, rangeLength)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+rangeSize = rangeHigh - rangeLow
+
+atr15 = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.atr(14)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+compressed =
+     rangeSize < atr15 * 8.0
+
+// ================================================================
+// 5M EXPANSION
+// ================================================================
+
+atr = ta.atr(atrLength)
+atrAverage = ta.sma(atr, atrAverageLength)
+
+atrExpanding =
+     atr > atrAverage * 1.10
+
+volumeAverage = ta.sma(volume, 20)
+
+volumeExpanding =
+     volume > volumeAverage * volumeMultiplier
+
+[diPlus, diMinus, adx] = ta.dmi(14, 14)
+
+longCondition =
+     bull4h and
+     bull1h and
+     compressed and
+     ta.crossover(close, rangeHigh) and
+     atrExpanding and
+     volumeExpanding and
+     adx > 20
+
+shortCondition =
+     bear4h and
+     bear1h and
+     compressed and
+     ta.crossunder(close, rangeLow) and
+     atrExpanding and
+     volumeExpanding and
+     adx > 20
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
+
+if strategy.position_size > 0
+    strategy.exit(
+         "Long Exit",
+         "Long",
+         stop = strategy.position_avg_price * (1 - slPercent / 100),
+         limit = strategy.position_avg_price * (1 + tpPercent / 100)
+    )
+
+if strategy.position_size < 0
+    strategy.exit(
+         "Short Exit",
+         "Short",
+         stop = strategy.position_avg_price * (1 + slPercent / 100),
+         limit = strategy.position_avg_price * (1 - tpPercent / 100)
+    )

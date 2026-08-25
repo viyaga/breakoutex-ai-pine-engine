@@ -7,7 +7,8 @@
         "dev": "tsx --watch src/server.ts",
         "start": "node dist/server.js",
         "test:parity": "tsx src/scripts/test-parity.ts",
-        "test:strategies": "tsx src/scripts/test-all-12-strategies.ts"
+        "test:strategies": "tsx src/scripts/test-all-12-strategies.ts",
+        "backtest": "tsx src/scripts/run-pineforge-backtest.ts"
     },
     "keywords": [],
     "author": "",

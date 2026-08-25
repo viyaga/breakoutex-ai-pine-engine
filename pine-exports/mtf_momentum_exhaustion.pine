@@ -1,0 +1,117 @@
+// ================================================================
+// Strategy: MTF Momentum Exhaustion Reversal
+// ID: mtf_momentum_exhaustion
+// Best Regimes: ranging_choppy, low_volatility_consolidation
+// Timeframe: 5m
+// Target TP: 1.8% | Target SL: 0.9%
+// ================================================================
+
+//@version=6
+
+strategy(
+     "MTF Momentum Exhaustion Reversal",
+     overlay = true,
+     pyramiding = 0,
+     process_orders_on_close = true,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.05
+)
+
+// ================================================================
+// 1H RANGE
+// ================================================================
+
+ema50 = request.security(
+     syminfo.tickerid,
+     "60",
+     ta.ema(close, 50)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+ema200 = request.security(
+     syminfo.tickerid,
+     "60",
+     ta.ema(close, 200)[1],
+     lookahead = barmerge.lookahead_on
+)
+
+[diPlus, diMinus, adx] = request.security(
+     syminfo.tickerid,
+     "60",
+     ta.dmi(14, 14),
+     lookahead = barmerge.lookahead_on
+)
+
+rangeRegime =
+     adx < 25 and
+     math.abs(ema50 - ema200) / ema200 < 0.02
+
+// ================================================================
+// 15M MACD
+// ================================================================
+
+[macd15, signal15, hist15] = request.security(
+     syminfo.tickerid,
+     "15",
+     ta.macd(close, 12, 26, 9),
+     lookahead = barmerge.lookahead_on
+)
+
+bullishMomentumImproving =
+     hist15 > hist15[1]
+
+bearishMomentumWeakening =
+     hist15 < hist15[1]
+
+// ================================================================
+// 5M
+// ================================================================
+
+rsi = ta.rsi(close, 14)
+
+stoch = ta.stoch(
+     close,
+     high,
+     low,
+     14
+)
+
+bullishReversal =
+     ta.crossover(stoch, 20) and
+     ta.crossover(rsi, 30)
+
+bearishReversal =
+     ta.crossunder(stoch, 80) and
+     ta.crossunder(rsi, 70)
+
+longCondition =
+     rangeRegime and
+     bullishMomentumImproving and
+     bullishReversal
+
+shortCondition =
+     rangeRegime and
+     bearishMomentumWeakening and
+     bearishReversal
+
+if longCondition
+    strategy.entry("Long", strategy.long)
+
+if shortCondition
+    strategy.entry("Short", strategy.short)
+
+if strategy.position_size > 0
+    strategy.exit(
+         "Long Exit",
+         "Long",
+         stop = strategy.position_avg_price * 0.991,
+         limit = strategy.position_avg_price * 1.018
+    )
+
+if strategy.position_size < 0
+    strategy.exit(
+         "Short Exit",
+         "Short",
+         stop = strategy.position_avg_price * 1.009,
+         limit = strategy.position_avg_price * 0.982
+    )
