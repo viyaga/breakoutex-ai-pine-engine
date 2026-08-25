@@ -8,6 +8,8 @@
         "start": "node dist/server.js",
         "test:parity": "tsx src/scripts/test-parity.ts",
         "test:strategies": "tsx src/scripts/test-all-12-strategies.ts",
+        "test:cross-engine": "tsx src/scripts/test-cross-engine-parity.ts",
+        "debug:parity": "tsx src/scripts/debug-candle-parity.ts",
         "backtest": "tsx src/scripts/run-pineforge-backtest.ts"
     },
     "keywords": [],
