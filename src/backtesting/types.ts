@@ -71,6 +71,7 @@ export interface BacktestTrade {
      * portfolio simulation.
      */
     quantity?: number;
+    size?: number;
     grossPnl?: number;
     netPnl?: number;
     capitalBefore?: number;
@@ -105,6 +106,8 @@ export interface BacktestFees {
      */
     entryPct: number;
     exitPct: number;
+    makerFeePercent?: number;
+    takerFeePercent?: number;
 }
 
 export interface BacktestSlippage {
@@ -216,9 +219,24 @@ export interface BacktestCapitalOptions {
 
 export interface BacktestOptions {
     /**
+     * Trading symbol.
+     */
+    symbol?: string;
+
+    /**
      * Base timeframe used for execution.
      */
     baseTimeframe?: string;
+
+    /**
+     * Default take profit percent.
+     */
+    defaultTpPercent?: number;
+
+    /**
+     * Default stop loss percent.
+     */
+    defaultSlPercent?: number;
 
     /**
      * Number of candles used for actual
@@ -338,6 +356,7 @@ export interface BacktestRequest {
 export interface BacktestResult {
     strategyId: string;
     strategyName: string;
+    symbol?: string;
 
     initialCapital: number;
     finalCapital: number;
@@ -412,6 +431,31 @@ export interface BacktestDiagnostics {
     signalErrors: number;
 
     lookaheadWarnings: number;
+
+    /**
+     * Total bars on which the Pine script was evaluated.
+     */
+    signalsEvaluated: number;
+
+    /**
+     * Total bars emitting buy or sell signals.
+     */
+    entrySignals: number;
+
+    /**
+     * Total bars emitting close signals.
+     */
+    exitSignals: number;
+
+    /**
+     * Total signals filtered by position state, sizing, or risk limits.
+     */
+    filteredSignals: number;
+
+    /**
+     * Total entry orders successfully executed into positions.
+     */
+    executedTrades: number;
 
     warmupBars: number;
 

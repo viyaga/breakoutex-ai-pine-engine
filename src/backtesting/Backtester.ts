@@ -361,7 +361,10 @@ export class Backtester {
         options: BacktestOptions = {}
     ): Required<BacktestOptions> {
         return {
+            symbol: options.symbol ?? 'BTCUSDT',
             baseTimeframe: options.baseTimeframe ?? '5m',
+            defaultTpPercent: options.defaultTpPercent ?? 3.0,
+            defaultSlPercent: options.defaultSlPercent ?? 1.5,
 
             windowBars:
                 options.windowBars ?? 10_000,
@@ -688,6 +691,16 @@ export class Backtester {
 
         let lookaheadWarnings = 0;
 
+        let signalsEvaluated = 0;
+
+        let entrySignals = 0;
+
+        let exitSignals = 0;
+
+        let filteredSignals = 0;
+
+        let executedTrades = 0;
+
         const signalDiagnostics:
             SignalDiagnostic[] = [];
 
@@ -874,6 +887,7 @@ export class Backtester {
 
                     if (!currentPos) {
 
+                        executedTrades++;
                         tradeCounter++;
 
                         const side =
@@ -1218,6 +1232,14 @@ export class Backtester {
                                 useCompiledScript: options.performance?.useCompiledScript,
                             }
                         );
+
+                    signalsEvaluated++;
+
+                    if (signal.action === 'buy' || signal.action === 'sell') {
+                        entrySignals++;
+                    } else if (signal.action === 'close') {
+                        exitSignals++;
+                    }
 
                     if (
                         options.diagnostics?.collectSignals
@@ -1752,6 +1774,16 @@ export class Backtester {
                 signalErrors,
 
                 lookaheadWarnings,
+
+                signalsEvaluated,
+
+                entrySignals,
+
+                exitSignals,
+
+                filteredSignals,
+
+                executedTrades,
 
                 warmupBars:
                     testWindow.warmupBars,
