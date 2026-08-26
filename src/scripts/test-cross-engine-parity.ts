@@ -7,8 +7,8 @@
 // ================================================================
 
 import { Candle } from '../config/types';
-import { getAllStrategies, getStrategyById, STRATEGY_LIBRARY } from '../pine/strategy-library';
-import { backtestStrategy } from '../pine/backtester';
+import { getAllStrategies, getStrategyById, STRATEGY_LIBRARY } from '../backtesting/strategy-library';
+import { Backtester } from '../backtesting/Backtester';
 import { PineV6BacktestRunner } from '../../../breakoutex-ai-mobile/src/pine-engine/runner';
 import { PINE_V6_TEMPLATES } from '../../../breakoutex-ai-mobile/src/pine-engine/templates';
 import { PineCandle } from '../../../breakoutex-ai-mobile/src/pine-engine/types';
@@ -124,11 +124,15 @@ async function runParityComparison(symbol = 'ETHUSDT', limit = 1000) {
         let backendRes: any = null;
         let backendError: string | null = null;
         try {
-            backendRes = backtestStrategy(backendDef, candleMap, '5m', limit, {
-                entryFeePct: 0.0004,
-                exitFeePct: 0.0004,
-                entrySlippagePct: 0.0003,
-                exitSlippagePct: 0.0003,
+            backendRes = Backtester.run({
+                strategy: backendDef,
+                candleMap,
+                options: {
+                    baseTimeframe: '5m',
+                    capital: { initial: 10_000 },
+                    fees: { entryPct: 0.04, exitPct: 0.04 },
+                    slippage: { entryPct: 0.03, exitPct: 0.03 },
+                },
             });
         } catch (err: any) {
             backendError = err.message;
