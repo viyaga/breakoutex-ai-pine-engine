@@ -8,8 +8,7 @@
 // ================================================================
 
 import { Candle } from '../config/types';
-import { normalizeTimeframe } from '../pine/interpreter';
-import { SeriesCache, createSeriesCache } from '../pine/SeriesCache';
+import { normalizeTimeframe, SeriesCache, createSeriesCache } from '../interpreter';
 import { TimeframeCursor } from './TimeframeCursor';
 import { MTFSeriesCache } from './MTFSeriesCache';
 

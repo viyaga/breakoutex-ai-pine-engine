@@ -11,7 +11,7 @@ import { BacktestOptions, BacktestResult, BacktestTrade } from './types';
 import { Backtester } from './Backtester';
 import { ExchangeContractSpec, ExchangeConfig } from './ExchangeConfig';
 import { ExecutionSimulator } from './ExecutionSimulator';
-import { normalizeTimeframe } from '../pine/interpreter';
+import { normalizeTimeframe } from '../interpreter';
 
 export interface FrictionCostBreakdown {
     totalMakerFees: number;

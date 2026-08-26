@@ -4,12 +4,9 @@
 
 export * from './config/types';
 export * from './pine/strategy-library';
-export * from './pine/interpreter';
-export * from './pine/indicators';
-export * from './pine/SeriesCache';
-export * from './pine/CandleSeriesView';
-export * from './pine/CompiledPineScript';
-export * from './pine/PineExecutionContext';
+export * from './pine/backtester';
+export * from './pine/pineforge-exporter';
+export * from './interpreter';
 export * from './backtesting/types';
 export * from './backtesting/TradingBacktester';
 export * from './backtesting/Backtester';

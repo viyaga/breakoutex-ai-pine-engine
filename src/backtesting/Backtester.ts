@@ -34,16 +34,17 @@ import {
 import { PineScriptCache } from './PineScriptCache';
 import { PerformanceTimer, PerformanceTiming } from './PerformanceTimer';
 import { IndicatorEngine } from './IndicatorEngine';
-import { PineExecutionContext } from '../pine/PineExecutionContext';
-import { PineScriptCompiler } from '../pine/CompiledPineScript';
-import { SeriesCache, createSeriesCache } from '../pine/SeriesCache';
-import { TimeframeCursor } from './TimeframeCursor';
-import { MTFSeriesCache } from './MTFSeriesCache';
 import {
+    PineExecutionContext,
+    PineScriptCompiler,
+    SeriesCache,
+    createSeriesCache,
     evaluatePineScript,
     normalizeTimeframe,
     analyzeDataSufficiency,
-} from '../pine/interpreter';
+} from '../interpreter';
+import { TimeframeCursor } from './TimeframeCursor';
+import { MTFSeriesCache } from './MTFSeriesCache';
 
 export class Backtester {
 

@@ -25,7 +25,7 @@ import {
 
 import {
     normalizeTimeframe,
-} from '../pine/interpreter';
+} from '../interpreter';
 
 // ----------------------------------------------------------------
 // Data Split Types

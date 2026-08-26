@@ -1,11 +1,11 @@
 import env from '../config/env';
 import { PineBotConfig, Candle } from '../config/types';
 import { getStrategyById, getStrategyCatalogForAi, STRATEGY_LIBRARY, getStrategiesForMarketCondition, PineStrategyDefinition } from '../pine/strategy-library';
-import * as ind from '../pine/indicators';
+import * as ind from '../interpreter';
 
 import { generateWithGemini } from '../ai/gemini-client';
 import { backtestAllStrategies, BacktestResult } from '../pine/backtester';
-import { normalizeTimeframe } from '../pine/interpreter';
+import { normalizeTimeframe } from '../interpreter';
 import { BotCycleLogger } from '../utils/cycle-logger';
 
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;

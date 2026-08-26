@@ -5,7 +5,7 @@
 
 import { IExchangeClient, resolutionMs } from '../exchange/exchange.interface';
 import { createExchangeClient } from '../exchange/exchange.factory';
-import { evaluatePineScript, extractRequestedTimeframes, normalizeTimeframe } from '../pine/interpreter';
+import { evaluatePineScript, extractRequestedTimeframes, normalizeTimeframe } from '../interpreter';
 import { PineTradeState } from '../models/tradeState.model';
 import { PineBotConfig } from '../config/types';
 import { syncLeverage, handleOpenTrade, getOrCreateState } from './position-manager';

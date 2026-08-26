@@ -46,7 +46,7 @@ import {
 
 import {
     normalizeTimeframe,
-} from '../pine/interpreter';
+} from '../interpreter';
 
 export type RobustnessVerdict =
     | 'HIGHLY_ROBUST'

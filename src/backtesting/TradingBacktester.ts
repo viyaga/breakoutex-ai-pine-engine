@@ -36,7 +36,7 @@ import {
 
 import {
     normalizeTimeframe,
-} from '../pine/interpreter';
+} from '../interpreter';
 
 import {
     AIRobustnessScorer,

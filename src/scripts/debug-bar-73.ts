@@ -7,7 +7,7 @@ import { PineParser } from '../../../breakoutex-ai-mobile/src/pine-engine/parser
 import { PineTALib } from '../../../breakoutex-ai-mobile/src/pine-engine/ta';
 import { FloatSeriesBuffer } from '../../../breakoutex-ai-mobile/src/pine-engine/buffers';
 import { MTFSecurityEngine } from '../../../breakoutex-ai-mobile/src/pine-engine/mtf/security';
-import { highest, lowest, sma, ema, rsi } from '../pine/indicators';
+import { highest, lowest, sma, ema, rsi } from '../interpreter';
 
 async function fetchBinanceKlines(symbol: string, interval: string, limit = 500): Promise<Candle[]> {
     const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&limit=${limit}`;

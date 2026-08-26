@@ -1,6 +1,6 @@
 import { Candle } from '../config/types';
 import { STRATEGY_LIBRARY } from '../pine/strategy-library';
-import { evaluatePineScript } from '../pine/interpreter';
+import { evaluatePineScript } from '../interpreter';
 import { PineV6BacktestRunner } from '../../../breakoutex-ai-mobile/src/pine-engine/runner';
 import { PineCandle } from '../../../breakoutex-ai-mobile/src/pine-engine/types';
 

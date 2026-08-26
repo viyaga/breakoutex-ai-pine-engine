@@ -16,7 +16,7 @@ import { Candle } from '../config/types';
 import {
     extractRequestedTimeframes,
     normalizeTimeframe,
-} from '../pine/interpreter';
+} from '../interpreter';
 
 export interface PreparedTimeframe {
     timeframe: string;

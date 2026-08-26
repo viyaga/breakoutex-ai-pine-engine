@@ -1,5 +1,5 @@
 import { Candle } from '../config/types';
-import * as Ind from '../pine/indicators';
+import * as Ind from '../interpreter';
 import { IndicatorEngine } from './IndicatorEngine';
 
 function generateTestCandles(count: number): Candle[] {

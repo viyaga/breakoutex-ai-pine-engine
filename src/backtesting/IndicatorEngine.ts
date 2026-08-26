@@ -8,7 +8,7 @@
 // ================================================================
 
 import { Candle } from '../config/types';
-import * as Ind from '../pine/indicators';
+import * as Ind from '../interpreter';
 
 export class IndicatorEngine {
 

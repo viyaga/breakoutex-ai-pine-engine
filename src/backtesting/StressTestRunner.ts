@@ -12,7 +12,7 @@ import { BacktestOptions, BacktestResult } from './types';
 import { Backtester } from './Backtester';
 import { HistoricalDataValidator, DataQualityReport } from './HistoricalDataValidator';
 import { MarketStressGenerator, StressScenarioType } from './MarketStressGenerator';
-import { normalizeTimeframe } from '../pine/interpreter';
+import { normalizeTimeframe } from '../interpreter';
 
 export type StressVerdict = 'ROBUST' | 'DEGRADED' | 'FRAGILE' | 'FAILED';
 

@@ -8,8 +8,17 @@ import { Candle, PineSignal } from '../config/types';
 import * as ind from './indicators';
 import { PineExecutionContext } from './PineExecutionContext';
 import { CompiledPineScript, PineScriptCompiler } from './CompiledPineScript';
+import { PineInterpreter } from './PineInterpreter';
 
-const defaultCompiler = new PineScriptCompiler();
+export { PineInterpreter };
+
+let defaultCompiler: PineScriptCompiler | null = null;
+function getDefaultCompiler(): PineScriptCompiler {
+    if (!defaultCompiler) {
+        defaultCompiler = new PineScriptCompiler();
+    }
+    return defaultCompiler;
+}
 
 interface StrategyContext {
     signal:   PineSignal;
@@ -71,6 +80,23 @@ export function parseTimeframeToMinutes(tf: string | number): number {
     if (s.endsWith('d')) return (parseInt(s) || 1) * 1440;
     if (s.endsWith('w')) return (parseInt(s) || 1) * 10080;
     return parseInt(s) || 5;
+}
+
+export type PineScriptVersion = 1 | 2 | 3 | 4 | 5 | 6;
+
+/**
+ * Detects the Pine Script version from source code annotation (e.g. //@version=5).
+ * Defaults to 5 if unspecified.
+ */
+export function detectPineVersion(script: string): PineScriptVersion {
+    const match = script.match(/\/\/\s*@version\s*=\s*(\d+)/i);
+    if (match && match[1]) {
+        const v = parseInt(match[1], 10);
+        if (v >= 1 && v <= 6) {
+            return v as PineScriptVersion;
+        }
+    }
+    return 5;
 }
 
 export interface DataSufficiencyRequirement {
@@ -669,7 +695,7 @@ export function evaluatePineScript(
         const useCompiled = options.useCompiledScript ?? true;
         let compiled = options.compiledScript;
         if (useCompiled && !compiled) {
-            compiled = defaultCompiler.compile(script);
+            compiled = getDefaultCompiler().compile(script);
         }
 
         if (compiled) {

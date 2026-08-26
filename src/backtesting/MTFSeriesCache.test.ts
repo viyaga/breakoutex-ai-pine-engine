@@ -4,7 +4,7 @@
 
 import { Candle } from '../config/types';
 import { MTFSeriesCache } from './MTFSeriesCache';
-import { evaluatePineScript } from '../pine/interpreter';
+import { evaluatePineScript } from '../interpreter';
 import { IndicatorEngine } from './IndicatorEngine';
 
 function generateCandles(

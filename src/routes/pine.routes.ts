@@ -6,7 +6,7 @@
 import { Router, Request, Response } from 'express';
 import { runPineCycle, clearCycleCache } from '../engine/index';
 import { fetchActivePineBots } from '../engine/config-fetcher';
-import { evaluatePineScript } from '../pine/interpreter';
+import { evaluatePineScript } from '../interpreter';
 import { backtestAllStrategies, backtestStrategy } from '../pine/backtester';
 import { getAllStrategies, getStrategyById } from '../pine/strategy-library';
 import { PineBotConfig } from '../config/types';

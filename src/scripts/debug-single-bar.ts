@@ -1,7 +1,6 @@
 import { Candle } from '../config/types';
 import { STRATEGY_LIBRARY } from '../pine/strategy-library';
-import { evaluatePineScript } from '../pine/interpreter';
-import { highest, rsi, sma } from '../pine/indicators';
+import { evaluatePineScript, highest, rsi, sma } from '../interpreter';
 
 async function fetchBinanceKlines(symbol: string, interval: string, limit = 500): Promise<Candle[]> {
     const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}&interval=${interval}&limit=${limit}`;

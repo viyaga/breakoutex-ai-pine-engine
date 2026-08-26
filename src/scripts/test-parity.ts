@@ -9,8 +9,8 @@
 // ================================================================
 
 import { Candle, PineBotConfig, OrderSide } from '../config/types';
-import * as ind from '../pine/indicators';
-import { evaluatePineScript } from '../pine/interpreter';
+import * as ind from '../interpreter';
+import { evaluatePineScript } from '../interpreter';
 import { computeTPSL } from '../engine/trade-executor';
 import { backtestStrategy } from '../pine/backtester';
 import { STRATEGY_LIBRARY } from '../pine/strategy-library';
@@ -64,12 +64,14 @@ async function runParityTestSuite() {
         }
     }
 
-    const candles5m = generateSyntheticCandles(150, 50000, 5);
-    const candles1h = generateSyntheticCandles(50, 50000, 60);
+    const candles5m = generateSyntheticCandles(500, 50000, 5);
+    const candles1h = generateSyntheticCandles(250, 50000, 60);
+    const candles4h = generateSyntheticCandles(250, 50000, 240);
 
     const candleMap = new Map<string, Candle[]>();
     candleMap.set('5m', candles5m);
     candleMap.set('1h', candles1h);
+    candleMap.set('4h', candles4h);
 
     const sampleBotConfig: PineBotConfig = {
         id: 'bot_test_parity',

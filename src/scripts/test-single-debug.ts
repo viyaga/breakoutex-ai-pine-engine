@@ -1,5 +1,5 @@
 import { STRATEGY_LIBRARY } from '../pine/strategy-library';
-import { evaluatePineScript } from '../pine/interpreter';
+import { evaluatePineScript } from '../interpreter';
 import { backtestStrategy } from '../pine/backtester';
 
 const candles = Array.from({length: 100}, (_, i) => ({

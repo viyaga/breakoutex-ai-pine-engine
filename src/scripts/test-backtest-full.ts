@@ -4,7 +4,7 @@
 
 import { TradingBacktester } from '../backtesting/TradingBacktester';
 import { getAllStrategies, STRATEGY_LIBRARY } from '../pine/strategy-library';
-import { evaluatePineScript } from '../pine/interpreter';
+import { evaluatePineScript } from '../interpreter';
 import { backtestStrategy } from '../pine/backtester';
 import { Candle } from '../config/types';
 

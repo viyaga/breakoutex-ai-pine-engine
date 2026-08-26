@@ -12,7 +12,7 @@ import { Backtester } from './Backtester';
 import { AIRobustnessScorer } from './AIRobustnessScorer';
 import { PortfolioOptimizer, PortfolioAllocationReport, AllocationModel } from './PortfolioOptimizer';
 import { StrategyCorrelationEngine } from './StrategyCorrelationEngine';
-import { normalizeTimeframe } from '../pine/interpreter';
+import { normalizeTimeframe } from '../interpreter';
 
 export interface MetaStrategyValidationRequest {
     strategies: PineStrategyDefinition[];

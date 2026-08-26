@@ -21,11 +21,8 @@ import {
 import {
     SeriesCache,
     createSeriesCache,
-} from '../pine/SeriesCache';
-
-import {
     normalizeTimeframe,
-} from '../pine/interpreter';
+} from '../interpreter';
 
 export interface MTFSeriesContext {
 
