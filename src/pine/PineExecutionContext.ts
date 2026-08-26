@@ -23,6 +23,10 @@ import {
     TimeframeCursor,
 } from '../backtesting/TimeframeCursor';
 
+import {
+    MTFSeriesCache,
+} from '../backtesting/MTFSeriesCache';
+
 export interface PineExecutionContext {
 
     /**
@@ -65,4 +69,9 @@ export interface PineExecutionContext {
      * MTF cursors tracking current visible HTF bar index.
      */
     cursors?: Map<string, TimeframeCursor>;
+
+    /**
+     * Unified MTF Series & Indicator cache.
+     */
+    mtfCache?: MTFSeriesCache;
 }

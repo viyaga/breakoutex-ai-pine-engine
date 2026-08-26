@@ -38,6 +38,7 @@ import { PineExecutionContext } from '../pine/PineExecutionContext';
 import { PineScriptCompiler } from '../pine/CompiledPineScript';
 import { SeriesCache, createSeriesCache } from '../pine/SeriesCache';
 import { TimeframeCursor } from './TimeframeCursor';
+import { MTFSeriesCache } from './MTFSeriesCache';
 import {
     evaluatePineScript,
     normalizeTimeframe,
@@ -700,21 +701,16 @@ export class Backtester {
             const baseCandles = testWindow.allCandles;
             const testStartIndex =
                 baseCandles.length - testWindow.testCandles.length;
-            const baseIndicatorEngine = new IndicatorEngine(baseCandles);
+            const normBase = normalizeTimeframe(baseTimeframe);
+            const mtfCache = context?.mtf ?? new MTFSeriesCache(candleMap);
+            const baseIndicatorEngine = mtfCache.get(normBase)?.indicators ?? new IndicatorEngine(baseCandles);
 
             const timeframeIndicators = new Map<string, IndicatorEngine>();
-            timeframeIndicators.set(
-                normalizeTimeframe(baseTimeframe),
-                baseIndicatorEngine
-            );
+            timeframeIndicators.set(normBase, baseIndicatorEngine);
             for (const [tf, cList] of candleMap.entries()) {
                 const norm = normalizeTimeframe(tf);
-                if (!timeframeIndicators.has(norm)) {
-                    timeframeIndicators.set(
-                        norm,
-                        new IndicatorEngine(cList)
-                    );
-                }
+                const engine = mtfCache.get(norm)?.indicators ?? new IndicatorEngine(cList);
+                timeframeIndicators.set(norm, engine);
             }
 
             const series = context?.series ?? new Map<string, SeriesCache>();
@@ -722,8 +718,8 @@ export class Backtester {
             if (!context?.series) {
                 for (const [tf, cList] of candleMap.entries()) {
                     const norm = normalizeTimeframe(tf);
-                    series.set(norm, createSeriesCache(cList));
-                    cursors.set(norm, new TimeframeCursor(cList));
+                    series.set(norm, mtfCache.get(norm)?.series ?? createSeriesCache(cList));
+                    cursors.set(norm, mtfCache.get(norm)?.cursor ?? new TimeframeCursor(cList));
                 }
             }
 
@@ -736,7 +732,12 @@ export class Backtester {
                 timeframeIndicators,
                 series,
                 cursors,
+                mtfCache,
             };
+            mtfCache.reset();
+            for (const cursor of cursors.values()) {
+                cursor.reset();
+            }
         }
 
         // ------------------------------------------------------------

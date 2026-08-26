@@ -11,6 +11,7 @@ import { Candle } from '../config/types';
 import { normalizeTimeframe } from '../pine/interpreter';
 import { SeriesCache, createSeriesCache } from '../pine/SeriesCache';
 import { TimeframeCursor } from './TimeframeCursor';
+import { MTFSeriesCache } from './MTFSeriesCache';
 
 export interface BacktestContext {
 
@@ -19,6 +20,8 @@ export interface BacktestContext {
     series: Map<string, SeriesCache>;
 
     cursors: Map<string, TimeframeCursor>;
+
+    mtf: MTFSeriesCache;
 
     timeframes: string[];
 
@@ -106,6 +109,8 @@ export function createBacktestContext(
         cursors.set(timeframe, new TimeframeCursor(candles));
     }
 
+    const mtf = new MTFSeriesCache(normalizedMap);
+
     return {
 
         candleMap:
@@ -114,6 +119,8 @@ export function createBacktestContext(
         series,
 
         cursors,
+
+        mtf,
 
         timeframes:
             Array.from(

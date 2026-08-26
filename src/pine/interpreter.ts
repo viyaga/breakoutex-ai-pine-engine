@@ -546,8 +546,10 @@ export function evaluatePineScript(
     const request = {
         security(_sym: string, tf: string | number, exprFn: any) {
             const normTf = normalizeTimeframe(tf);
-            const cursor = execCtx?.cursors?.get(normTf);
-            const htfSeries = execCtx?.series?.get(normTf);
+            const mtfContext = execCtx?.mtfCache?.get(normTf);
+            const cursor = mtfContext?.cursor ?? execCtx?.cursors?.get(normTf);
+            const htfSeries = mtfContext?.series ?? execCtx?.series?.get(normTf);
+            const htfEngine = mtfContext?.indicators ?? execCtx?.timeframeIndicators?.get(normTf);
             const currentTs = execCtx ? execCtx.currentTimestamp : (candles[candles.length - 1]?.timestamp ?? Date.now());
 
             let htfLast: number;
@@ -572,7 +574,6 @@ export function evaluatePineScript(
             const htfHL2    = htfSeries ? wrapSeries(htfSeries.hl2, htfLast) : wrapSeries(effectiveCandles.map(c => (c.high + c.low) / 2), htfLast);
             const htfHLC3   = htfSeries ? wrapSeries(htfSeries.hlc3, htfLast) : wrapSeries(effectiveCandles.map(c => (c.high + c.low + c.close) / 3), htfLast);
             const htfOHLC4  = htfSeries ? wrapSeries(htfSeries.ohlc4, htfLast) : wrapSeries(effectiveCandles.map(c => (c.open + c.high + c.low + c.close) / 4), htfLast);
-            const htfEngine = execCtx?.timeframeIndicators?.get(normTf);
             const htfTa     = buildTaNamespace(effectiveCandles, htfEngine, false, htfLast);
 
             if (typeof exprFn === 'function') {
