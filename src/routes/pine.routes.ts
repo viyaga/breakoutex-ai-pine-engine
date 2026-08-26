@@ -7,8 +7,7 @@ import { Router, Request, Response } from 'express';
 import { runPineCycle, clearCycleCache } from '../engine/index';
 import { fetchActivePineBots } from '../engine/config-fetcher';
 import { evaluatePineScript } from '../interpreter';
-import { backtestAllStrategies, backtestStrategy } from '../pine/backtester';
-import { getAllStrategies, getStrategyById } from '../pine/strategy-library';
+import { Backtester, getAllStrategies, getStrategyById } from '../backtesting';
 import { PineBotConfig } from '../config/types';
 import env from '../config/env';
 
@@ -92,11 +91,19 @@ router.post('/backtest', (req: Request, res: Response) => {
             if (!strat) {
                 return void res.status(404).json({ success: false, error: `Strategy '${strategyId}' not found` });
             }
-            const result = backtestStrategy(strat, candleMap, timeframe, windowBars);
+            const result = Backtester.run({
+                strategy: strat,
+                candleMap,
+                options: { baseTimeframe: timeframe, windowBars },
+            });
             return void res.json({ success: true, result });
         } else {
             const allStrats = getAllStrategies();
-            const results = backtestAllStrategies(allStrats, candleMap, timeframe, windowBars);
+            const results = Backtester.runMany(
+                allStrats,
+                candleMap,
+                { baseTimeframe: timeframe, windowBars }
+            );
             return void res.json({ success: true, count: results.length, results });
         }
     } catch (err: any) {

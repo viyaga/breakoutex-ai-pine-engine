@@ -1,6 +1,5 @@
-import { STRATEGY_LIBRARY } from '../pine/strategy-library';
+import { STRATEGY_LIBRARY, Backtester } from '../backtesting';
 import { evaluatePineScript } from '../interpreter';
-import { backtestStrategy } from '../pine/backtester';
 
 const candles = Array.from({length: 100}, (_, i) => ({
   timestamp: 1000 + i * 300000,
@@ -16,10 +15,10 @@ try {
   console.error('Error in evaluatePineScript:', e.message, e.stack);
 }
 
-console.log('\nTesting backtestStrategy...');
+console.log('\nTesting Backtester.run...');
 try {
-  const res2 = backtestStrategy(STRATEGY_LIBRARY.mtf_failed_breakout, map, '5m', 100);
-  console.log('backtestStrategy Total Trades:', res2.totalTrades);
+  const res2 = Backtester.run({ strategy: STRATEGY_LIBRARY.mtf_failed_breakout, candleMap: map, options: { baseTimeframe: '5m', windowBars: 100 } });
+  console.log('Backtester Total Trades:', res2.totalTrades);
 } catch (e: any) {
-  console.error('Error in backtestStrategy:', e.message, e.stack);
+  console.error('Error in Backtester.run:', e.message, e.stack);
 }

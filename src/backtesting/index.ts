@@ -3,6 +3,8 @@
 // ================================================================
 
 export * from './types';
+export * from './strategy-library';
+export * from './pineforge-exporter';
 export * from './TradingBacktester';
 export * from './Backtester';
 export * from './BacktestContext';

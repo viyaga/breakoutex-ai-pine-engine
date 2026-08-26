@@ -4,7 +4,7 @@
 
 import { Candle } from '../config/types';
 import { TradingBacktester } from './TradingBacktester';
-import { STRATEGY_LIBRARY } from '../pine/strategy-library';
+import { STRATEGY_LIBRARY } from './strategy-library';
 import { MonteCarloSimulator } from './MonteCarloSimulator';
 import { WalkForwardEngine } from './WalkForwardEngine';
 import { MarketRegimeClassifier } from './MarketRegimeClassifier';

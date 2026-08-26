@@ -2,10 +2,8 @@
 // BreakoutEx AI Pine Engine — Full Backtest Integration Test
 // ================================================================
 
-import { TradingBacktester } from '../backtesting/TradingBacktester';
-import { getAllStrategies, STRATEGY_LIBRARY } from '../pine/strategy-library';
+import { TradingBacktester, getAllStrategies, STRATEGY_LIBRARY, Backtester } from '../backtesting';
 import { evaluatePineScript } from '../interpreter';
-import { backtestStrategy } from '../pine/backtester';
 import { Candle } from '../config/types';
 
 // ─── Candle Generator ────────────────────────────────────────────
@@ -86,7 +84,7 @@ for (let i = 0; i < allStrategies.length; i++) {
     const n = t();
     try {
         const sig = evaluatePineScript(s.pineScript, candleMap, '5m');
-        const bt  = backtestStrategy(s, candleMap, '5m', 100);
+        const bt  = Backtester.run({ strategy: s, candleMap, options: { baseTimeframe: '5m', windowBars: 100 } });
         if (!sig || !bt) fail(n, `${s.id}: null result`);
         console.log(`  ✅ Test ${n} [${String(i+1).padStart(2,'0')}/${allStrategies.length}] ${s.id.padEnd(36)} | Signal: ${sig.action.padEnd(5)} | Trades: ${bt.totalTrades}, WR: ${bt.winRate}%`);
         passed++;

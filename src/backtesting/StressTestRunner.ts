@@ -7,7 +7,7 @@
 // ================================================================
 
 import { Candle } from '../config/types';
-import { PineStrategyDefinition } from '../pine/strategy-library';
+import { PineStrategyDefinition } from './strategy-library';
 import { BacktestOptions, BacktestResult } from './types';
 import { Backtester } from './Backtester';
 import { HistoricalDataValidator, DataQualityReport } from './HistoricalDataValidator';
@@ -54,7 +54,7 @@ export interface StressTestRequest {
     customScenarios?: StressScenarioType[];
 }
 
-import { STRATEGY_LIBRARY } from '../pine/strategy-library';
+import { STRATEGY_LIBRARY } from './strategy-library';
 
 export class StressTestRunner {
 

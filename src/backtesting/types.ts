@@ -4,7 +4,7 @@
 // ================================================================
 
 import { Candle } from '../config/types';
-import { PineStrategyDefinition } from '../pine/strategy-library';
+import { PineStrategyDefinition } from './strategy-library';
 import { SignalDiagnostic } from './SignalDiagnostics';
 import { BacktestValidationResult, ValidationIssue } from './BacktestValidator';
 import { BacktestContext } from './BacktestContext';

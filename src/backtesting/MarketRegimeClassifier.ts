@@ -12,7 +12,7 @@ import {
 
 import {
     PineStrategyDefinition,
-} from '../pine/strategy-library';
+} from './strategy-library';
 
 import {
     BacktestTrade,

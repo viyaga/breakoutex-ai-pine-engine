@@ -12,8 +12,7 @@ import { Candle, PineBotConfig, OrderSide } from '../config/types';
 import * as ind from '../interpreter';
 import { evaluatePineScript } from '../interpreter';
 import { computeTPSL } from '../engine/trade-executor';
-import { backtestStrategy } from '../pine/backtester';
-import { STRATEGY_LIBRARY } from '../pine/strategy-library';
+import { STRATEGY_LIBRARY, Backtester } from '../backtesting';
 
 // ── 1. Synthetic Market Data Generator ──────────────────────────
 function generateSyntheticCandles(count: number, startPrice = 50000, tfMinutes = 5): Candle[] {
@@ -172,8 +171,8 @@ async function runParityTestSuite() {
 
     // ── TEST 4: Backtester Simulation Determinism ─────────────────
     console.log('\n4. Testing In-Engine Backtester vs Single Signal Parity...');
-    const bt1 = backtestStrategy(strat, candleMap, '5m', 100);
-    const bt2 = backtestStrategy(strat, candleMap, '5m', 100);
+    const bt1 = Backtester.run({ strategy: strat, candleMap, options: { baseTimeframe: '5m', windowBars: 100 } });
+    const bt2 = Backtester.run({ strategy: strat, candleMap, options: { baseTimeframe: '5m', windowBars: 100 } });
 
     assert(
         bt1.totalTrades === bt2.totalTrades && bt1.netPnlPercent === bt2.netPnlPercent,

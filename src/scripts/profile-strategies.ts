@@ -1,6 +1,5 @@
 import { Candle } from '../config/types';
-import { getAllStrategies } from '../pine/strategy-library';
-import { Backtester } from '../backtesting/Backtester';
+import { getAllStrategies, Backtester } from '../backtesting';
 
 function generateCandles(count: number, basePrice = 50000): Candle[] {
     const candles: Candle[] = [];

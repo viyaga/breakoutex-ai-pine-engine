@@ -28,7 +28,7 @@ import {
     PineStrategyDefinition,
     STRATEGY_LIBRARY,
     getAllStrategies,
-} from '../pine/strategy-library';
+} from './strategy-library';
 
 import {
     PerformanceTimer,

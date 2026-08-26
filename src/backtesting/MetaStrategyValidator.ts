@@ -6,7 +6,7 @@
 // ================================================================
 
 import { Candle } from '../config/types';
-import { PineStrategyDefinition } from '../pine/strategy-library';
+import { PineStrategyDefinition } from './strategy-library';
 import { BacktestOptions, BacktestResult } from './types';
 import { Backtester } from './Backtester';
 import { AIRobustnessScorer } from './AIRobustnessScorer';

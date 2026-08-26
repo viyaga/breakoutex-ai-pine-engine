@@ -1,5 +1,5 @@
 import { Candle } from '../config/types';
-import { STRATEGY_LIBRARY } from '../pine/strategy-library';
+import { STRATEGY_LIBRARY } from '../backtesting';
 import { evaluatePineScript, highest, rsi, sma } from '../interpreter';
 
 async function fetchBinanceKlines(symbol: string, interval: string, limit = 500): Promise<Candle[]> {

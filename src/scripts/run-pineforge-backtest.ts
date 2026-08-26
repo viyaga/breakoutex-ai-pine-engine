@@ -5,9 +5,14 @@
 // ================================================================
 
 import { Candle } from '../config/types';
-import { getAllStrategies, PineStrategyDefinition } from '../pine/strategy-library';
-import { backtestAllStrategies, BacktestResult } from '../pine/backtester';
-import { exportStrategiesToPineFiles, exportCandlesToCsv } from '../pine/pineforge-exporter';
+import {
+    getAllStrategies,
+    PineStrategyDefinition,
+    BacktestResult,
+    Backtester,
+    exportStrategiesToPineFiles,
+    exportCandlesToCsv
+} from '../backtesting';
 
 interface SymbolBacktestSummary {
     symbol: string;
@@ -87,7 +92,7 @@ async function runBacktestsForSymbol(symbol: string): Promise<SymbolBacktestSumm
     console.log(`\nSimulating all 12 MTF Pine Script strategies with 4-tick intrabar & 0.14% friction...`);
 
     const allStrategies = getAllStrategies();
-    const results = backtestAllStrategies(allStrategies, candleMap, '5m', 1000);
+    const results = Backtester.runMany(allStrategies, candleMap, { baseTimeframe: '5m', windowBars: 1000 });
 
     // Export klines to CSV for PineForge C++ interop
     exportCandlesToCsv(symbol, candleMap);

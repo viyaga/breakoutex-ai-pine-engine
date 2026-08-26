@@ -1,6 +1,5 @@
 import { Candle } from '../config/types';
-import { getAllStrategies } from '../pine/strategy-library';
-import { Backtester } from '../backtesting/Backtester';
+import { getAllStrategies, Backtester } from '../backtesting';
 
 function generateCandleData(count = 500): Map<string, Candle[]> {
     const timeframes = ['5m', '15m', '1h', '4h', '1d'];

@@ -1,5 +1,5 @@
 import { Candle } from '../config/types';
-import { PineStrategyDefinition } from '../pine/strategy-library';
+import { PineStrategyDefinition } from './strategy-library';
 import { Backtester } from './Backtester';
 
 function generateBaseCandles(count: number, basePrice = 100): Candle[] {

@@ -6,7 +6,7 @@
 // ================================================================
 
 import { Candle } from '../config/types';
-import { PineStrategyDefinition } from '../pine/strategy-library';
+import { PineStrategyDefinition } from './strategy-library';
 import { BacktestOptions, BacktestResult, BacktestTrade } from './types';
 import { Backtester } from './Backtester';
 import { ExchangeContractSpec, ExchangeConfig } from './ExchangeConfig';
@@ -60,7 +60,7 @@ export interface ExecutionComparisonRequest {
     timeframe?: string;
 }
 
-import { STRATEGY_LIBRARY } from '../pine/strategy-library';
+import { STRATEGY_LIBRARY } from './strategy-library';
 
 export class ExecutionComparisonEngine {
 

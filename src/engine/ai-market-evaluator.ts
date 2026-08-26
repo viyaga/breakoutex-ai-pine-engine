@@ -1,10 +1,9 @@
 import env from '../config/env';
 import { PineBotConfig, Candle } from '../config/types';
-import { getStrategyById, getStrategyCatalogForAi, STRATEGY_LIBRARY, getStrategiesForMarketCondition, PineStrategyDefinition } from '../pine/strategy-library';
+import { getStrategyById, getStrategyCatalogForAi, STRATEGY_LIBRARY, getStrategiesForMarketCondition, PineStrategyDefinition, BacktestResult, Backtester } from '../backtesting';
 import * as ind from '../interpreter';
 
 import { generateWithGemini } from '../ai/gemini-client';
-import { backtestAllStrategies, BacktestResult } from '../pine/backtester';
 import { normalizeTimeframe } from '../interpreter';
 import { BotCycleLogger } from '../utils/cycle-logger';
 
@@ -380,7 +379,7 @@ export async function evaluateAndApplyAiStrategy(
             candleMap.set('240', tf4hCandles);
         }
 
-        backtestResults = backtestAllStrategies(eligibleStrategies, candleMap, baseTf);
+        backtestResults = Backtester.runMany(eligibleStrategies, candleMap, { baseTimeframe: baseTf });
         const compactBt = backtestResults.map((r, i) => {
             if (r.status === 'no_triggers') {
                 return `${i + 1}.${r.strategyId}:STATUS=NO_TRIGGERS(0 Trades)`;

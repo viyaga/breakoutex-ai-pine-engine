@@ -3,7 +3,7 @@
 // ================================================================
 
 import { Candle } from '../config/types';
-import { getAllStrategies } from '../pine/strategy-library';
+import { getAllStrategies } from '../backtesting';
 import { PineInterpreter } from './PineInterpreter';
 
 function generateCandles(count: number): Candle[] {

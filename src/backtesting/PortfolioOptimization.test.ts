@@ -7,7 +7,7 @@ import { TradingBacktester } from './TradingBacktester';
 import { RiskExecutionGate } from './RiskExecutionGate';
 import { PortfolioOptimizer } from './PortfolioOptimizer';
 import { MetaStrategyValidator } from './MetaStrategyValidator';
-import { STRATEGY_LIBRARY } from '../pine/strategy-library';
+import { STRATEGY_LIBRARY } from './strategy-library';
 
 function generateCandles(
     count: number,

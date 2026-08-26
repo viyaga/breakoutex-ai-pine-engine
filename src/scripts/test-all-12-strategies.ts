@@ -1,6 +1,5 @@
-import { STRATEGY_LIBRARY, getAllStrategies } from '../pine/strategy-library';
+import { STRATEGY_LIBRARY, getAllStrategies, Backtester } from '../backtesting';
 import { evaluatePineScript } from '../interpreter';
-import { backtestStrategy } from '../pine/backtester';
 import { Candle } from '../config/types';
 
 function generateCandles(count: number, basePrice: number): Candle[] {
@@ -42,7 +41,7 @@ for (let i = 0; i < all.length; i++) {
     const num = String(i + 1).padStart(2, '0');
     try {
         const sig = evaluatePineScript(s.pineScript, candleMap, '5m');
-        const bt = backtestStrategy(s, candleMap, '5m', 100);
+        const bt = Backtester.run({ strategy: s, candleMap, options: { baseTimeframe: '5m', windowBars: 100 } });
         console.log(`[${num}/12] ✓ ${s.id.padEnd(35)} | Action: ${sig.action.padEnd(5)} | BT Trades: ${bt.totalTrades}, WR: ${bt.winRate}%`);
     } catch (e: any) {
         console.error(`[${num}/12] ✗ ${s.id}: FAILED -> ${e.message}`);
