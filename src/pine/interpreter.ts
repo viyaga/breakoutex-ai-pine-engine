@@ -182,14 +182,30 @@ export function extractRequestedTimeframes(script: string, baseTimeframe = '5m')
     return Array.from(set);
 }
 
+export interface PineEvaluationOptions {
+    /**
+     * If true, calculate the optional RSI/EMA/volume
+     * confluence score.
+     *
+     * DEFAULT = false
+     *
+     * The backtester should normally leave this false.
+     */
+    calculateConfluenceScore?: boolean;
+}
+
 /**
  * Evaluate a Pine Script strategy on historical candles (supports single or multi-timeframe).
  */
 export function evaluatePineScript(
     script: string,
     candlesInput: Candle[] | Map<string, Candle[]>,
-    baseTimeframe = '5m'
+    baseTimeframe = '5m',
+    options: PineEvaluationOptions = {}
 ): PineSignal {
+    const calculateConfluence =
+        options.calculateConfluenceScore ?? false;
+
     const candleMap: Map<string, Candle[]> = candlesInput instanceof Map
         ? candlesInput
         : new Map([[normalizeTimeframe(baseTimeframe), candlesInput]]);
@@ -227,16 +243,35 @@ export function evaluatePineScript(
             } else if (typeof rest[0] === 'object' && rest[0]?.comment) {
                 comment = rest[0].comment;
             }
-            ctx.signal = dir === 'long'
-                ? { action: 'buy',  comment }
-                : { action: 'sell', comment };
+            ctx.signal =
+                dir === 'long'
+                    ? {
+                        action: 'buy',
+                        comment,
+                        source: 'pine',
+                        explicitScore: false,
+                    }
+                    : {
+                        action: 'sell',
+                        comment,
+                        source: 'pine',
+                        explicitScore: false,
+                    };
             ctx.position = dir;
         },
         close(id?: string, comment?: string) {
-            ctx.signal = { action: 'close', comment: comment ?? id };
+            ctx.signal = {
+                action: 'close',
+                comment: comment ?? id,
+                source: 'pine',
+            };
         },
         close_all(comment?: string) {
-            ctx.signal = { action: 'close', comment: comment ?? 'close_all' };
+            ctx.signal = {
+                action: 'close',
+                comment: comment ?? 'close_all',
+                source: 'pine',
+            };
         },
         exit(id: string, _from?: string, ...rest: any[]) {
             const first = rest[0];
@@ -251,6 +286,7 @@ export function evaluatePineScript(
                 if (typeof rest[1] === 'number') ctx.signal.sl = rest[1];
                 if (typeof rest[2] === 'string') ctx.signal.comment = rest[2];
             }
+            ctx.signal.source = 'pine';
         },
         cancel(_id: string) {},
         order(_id: string, _dir: any, _qty?: number, _opts?: any) {},
@@ -483,43 +519,155 @@ export function evaluatePineScript(
         console.error('[PineInterpreter] Error:', err.message?.slice(0, 200));
     }
 
-    // ── Confluence Score Calculation ──────────────────────────────
-    if (ctx.signal.action === 'buy' || ctx.signal.action === 'sell') {
-        if (!ctx.signal.score) {
-            let score = 50; // Base score for valid signal trigger
+    // ── Optional Confluence Score Calculation ─────────────────────
+    //
+    // IMPORTANT:
+    // Pine strategy execution itself does NOT depend on this score.
+    //
+    // This is an optional BreakoutEx AI layer and is disabled by
+    // default so that the Pine backtester tests the actual strategy.
+    //
+    // Enable explicitly with:
+    //     calculateConfluenceScore: true
+    // ----------------------------------------------------------------
 
-            const rsiArr = ind.rsi(close, 14);
-            const currentRsi = rsiArr[last] || 50;
+    if (
+        calculateConfluence &&
+        (
+            ctx.signal.action === 'buy' ||
+            ctx.signal.action === 'sell'
+        )
+    ) {
 
-            const ema20Arr = ind.ema(close, Math.min(20, Math.floor(n / 2)));
-            const ema50Arr = ind.ema(close, Math.min(50, Math.floor(n / 2)));
-            const currentEma20 = ema20Arr[last] || close[last];
-            const currentEma50 = ema50Arr[last] || close[last];
-            const currentPrice = close[last];
+        if (
+            ctx.signal.score === undefined
+        ) {
 
-            // 1. RSI Confluence (+15)
-            if (ctx.signal.action === 'buy' && currentRsi >= 45 && currentRsi <= 70) {
+            let score = 50;
+
+            const rsiArr =
+                ind.rsi(
+                    close,
+                    14
+                );
+
+            const currentRsi =
+                rsiArr[last] || 50;
+
+            const ema20Arr =
+                ind.ema(
+                    close,
+                    Math.min(
+                        20,
+                        Math.floor(
+                            n / 2
+                        )
+                    )
+                );
+
+            const ema50Arr =
+                ind.ema(
+                    close,
+                    Math.min(
+                        50,
+                        Math.floor(
+                            n / 2
+                        )
+                    )
+                );
+
+            const currentEma20 =
+                ema20Arr[last] ||
+                close[last];
+
+            const currentEma50 =
+                ema50Arr[last] ||
+                close[last];
+
+            const currentPrice =
+                close[last];
+
+            // --------------------------------------------------------
+            // RSI
+            // --------------------------------------------------------
+
+            if (
+                ctx.signal.action === 'buy' &&
+                currentRsi >= 45 &&
+                currentRsi <= 70
+            ) {
+
                 score += 15;
-            } else if (ctx.signal.action === 'sell' && currentRsi <= 55 && currentRsi >= 30) {
+
+            } else if (
+                ctx.signal.action === 'sell' &&
+                currentRsi <= 55 &&
+                currentRsi >= 30
+            ) {
+
                 score += 15;
             }
 
-            // 2. Trend Confluence (+20)
-            if (ctx.signal.action === 'buy' && currentPrice > currentEma20 && currentEma20 >= currentEma50) {
+            // --------------------------------------------------------
+            // Trend
+            // --------------------------------------------------------
+
+            if (
+                ctx.signal.action === 'buy' &&
+                currentPrice > currentEma20 &&
+                currentEma20 >= currentEma50
+            ) {
+
                 score += 20;
-            } else if (ctx.signal.action === 'sell' && currentPrice < currentEma20 && currentEma20 <= currentEma50) {
+
+            } else if (
+                ctx.signal.action === 'sell' &&
+                currentPrice < currentEma20 &&
+                currentEma20 <= currentEma50
+            ) {
+
                 score += 20;
             }
 
-            // 3. Volume Confluence (+15)
-            const volSma = ind.sma(volume, Math.min(20, n));
-            const currentVol = volume[last];
-            const avgVol = volSma[last] || currentVol;
-            if (currentVol > avgVol * 1.1) {
+            // --------------------------------------------------------
+            // Volume
+            // --------------------------------------------------------
+
+            const volSma =
+                ind.sma(
+                    volume,
+                    Math.min(
+                        20,
+                        n
+                    )
+                );
+
+            const currentVol =
+                volume[last];
+
+            const avgVol =
+                volSma[last] ||
+                currentVol;
+
+            if (
+                currentVol >
+                avgVol * 1.1
+            ) {
+
                 score += 15;
             }
 
-            ctx.signal.score = Math.min(100, Math.max(0, score));
+            ctx.signal.score =
+                Math.min(
+                    100,
+                    Math.max(
+                        0,
+                        score
+                    )
+                );
+
+            ctx.signal.source =
+                'ai';
         }
     }
 

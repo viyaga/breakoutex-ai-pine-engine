@@ -65,11 +65,38 @@ export interface Candle {
 
 /** Signal produced by Pine Script interpreter */
 export interface PineSignal {
-    action: 'buy' | 'sell' | 'close' | 'none';
-    tp?: number;   // absolute price (optional — falls back to TP_PERCENT)
-    sl?: number;   // absolute price (optional — falls back to SL_PERCENT)
-    score?: number; // confluence score (0-100)
+    action:
+        | 'buy'
+        | 'sell'
+        | 'close'
+        | 'none';
+
+    tp?: number;
+
+    sl?: number;
+
     comment?: string;
+
+    /**
+     * Optional AI/confluence score.
+     *
+     * IMPORTANT:
+     * This is NOT part of Pine execution semantics.
+     */
+    score?: number;
+
+    /**
+     * True when score was explicitly generated
+     * by the Pine strategy / caller.
+     */
+    explicitScore?: boolean;
+
+    /**
+     * Diagnostic information about the signal.
+     */
+    source?: 'pine' | 'ai' | 'system';
+
+    signalTimestamp?: number;
 }
 
 /** Raw bot from Payload API */

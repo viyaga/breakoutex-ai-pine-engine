@@ -178,14 +178,27 @@ async function runParityComparison(symbol = 'ETHUSDT', limit = 1000) {
 
         const bSharpe = backendRes.sharpeRatio.toFixed(2);
         const mSharpe = (mobileRes.metrics.sharpeRatio || 0).toFixed(2);
-
         const pnlDiff = Math.abs(backendRes.netPnlPercent - mobileRes.metrics.netProfitPercent);
-        const parityMatch = bTrades === mTrades || (pnlDiff < 1.0);
 
-        const statusTag = parityMatch ? 'IDENTICAL PARITY ✔' : 'ALIGNED 🟢';
+        let statusTag: string;
+        let winRateTag: string;
+
+        if (bTrades === 0 && mTrades === 0) {
+            statusTag = 'UNPROVEN ⚠️';
+            winRateTag = 'UNPROVEN';
+        } else if (bTrades === mTrades) {
+            statusTag = 'IDENTICAL PARITY ✔';
+            winRateTag = 'MATCHED';
+        } else if (Math.abs(bTrades - mTrades) <= 1) {
+            statusTag = 'EXECUTION-ALIGNED 🟢';
+            winRateTag = 'ALIGNED';
+        } else {
+            statusTag = 'MISMATCH ❌';
+            winRateTag = 'MISMATCH';
+        }
 
         console.log(`${num} | ${pair.name.padEnd(25)} | Trades Count    | ${String(bTrades).padStart(16)} | ${String(mTrades).padStart(17)} | ${statusTag}`);
-        console.log(`   |                           | Win Rate        | ${bWinRate.padStart(16)} | ${mWinRate.padStart(17)} | ${bTrades === mTrades ? 'MATCHED' : 'ALIGNED'}`);
+        console.log(`   |                           | Win Rate        | ${bWinRate.padStart(16)} | ${mWinRate.padStart(17)} | ${winRateTag}`);
         console.log(`   |                           | Net Return %    | ${bPnl.padStart(16)} | ${mPnl.padStart(17)} | Δ = ${pnlDiff.toFixed(2)}%`);
         console.log(`   |                           | Profit Factor   | ${bPf.padStart(16)} | ${mPf.padStart(17)} |`);
         console.log(`   |                           | Sharpe Ratio    | ${bSharpe.padStart(16)} | ${mSharpe.padStart(17)} |`);

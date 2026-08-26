@@ -28,10 +28,11 @@ function generateCandles(count: number, basePrice: number): Candle[] {
 }
 
 const candleMap = new Map<string, Candle[]>();
-candleMap.set('5m', generateCandles(200, 60000));
-candleMap.set('15m', generateCandles(100, 60000));
-candleMap.set('1h', generateCandles(60, 60000));
-candleMap.set('4h', generateCandles(40, 60000));
+candleMap.set('5m', generateCandles(2000, 60000));
+candleMap.set('15m', generateCandles(1000, 60000));
+candleMap.set('1h', generateCandles(500, 60000));
+candleMap.set('4h', generateCandles(500, 60000));
+candleMap.set('1d', generateCandles(300, 60000));
 
 console.log(`\nTesting All 12 Production MTF Strategy Families:\n`);
 const all = getAllStrategies();
