@@ -193,8 +193,10 @@ export class PineOrderEngine {
                 ? 'short'
                 : 'long';
 
-        // Check pyramiding rule
-        if (this.position.side === side && this.position.entries.length >= this.config.pyramiding) {
+        // Check pyramiding rule (including pending entries in same direction)
+        const pendingSameDir = this.pendingOrders.filter(o => o.intent === 'entry' && o.side === side && o.status === 'pending');
+        const activeEntriesCount = this.position.side === side ? this.position.entries.length : 0;
+        if (activeEntriesCount + pendingSameDir.length >= this.config.pyramiding) {
             return;
         }
 
@@ -650,7 +652,10 @@ export class PineOrderEngine {
                 }
             }
         } else if (order.intent === 'exit' || order.intent === 'close') {
-            this.closePositionAndRecordTrade(fillPrice, candle, order.id, order.comment ?? 'exit', Math.min(qty, this.position.size));
+            const closeQty = (order.fromEntry === 'all' || order.id === 'close_all')
+                ? this.position.size
+                : Math.min(qty, this.position.size);
+            this.closePositionAndRecordTrade(fillPrice, candle, order.id, order.comment ?? 'exit', closeQty);
         }
     }
 
