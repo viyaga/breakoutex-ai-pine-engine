@@ -1332,7 +1332,16 @@ export function evaluatePineScript(
     const input = createInputNamespace(options.inputOverrides);
 
     // ── barstate namespace ────────────────────────────────────────
-    const barstate = createBarState(targetIndex, candles.length, false);
+    const isHist = targetIndex < candles.length - 1;
+    const barstate = {
+        isconfirmed: isHist,
+        ishistory: isHist,
+        isrealtime: !isHist,
+        isfirst: targetIndex === 0,
+        islast: targetIndex === candles.length - 1,
+        islastconfirmedhistory: targetIndex === candles.length - 2,
+        isnew: true,
+    };
 
     // ── color namespace ───────────────────────────────────────────
     const color = {
@@ -1346,6 +1355,7 @@ export function evaluatePineScript(
     };
 
     // ── syminfo / timeframe stubs ─────────────────────────────────
+    const periodStr = baseTfNorm.replace(/m$/, '');
     const syminfo = {
         ticker: 'BTCUSDT', tickerid: 'BTCUSDT',
         mintick: 0.01, minmove: 1, pricescale: 100,
@@ -1354,7 +1364,7 @@ export function evaluatePineScript(
         pointvalue: 1, session: 'regular', timezone: 'UTC',
     };
     const timeframe = {
-        period: baseTfNorm, multiplier: parseInt(baseTfNorm) || 5, isdwm: false,
+        period: periodStr, multiplier: parseInt(periodStr) || 5, isdwm: false,
         isminutes: true, isseconds: false, isdays: false,
         isweekly: false, ismonthly: false, isintraday: true,
         change: (_tf: string) => false,
@@ -1375,6 +1385,50 @@ export function evaluatePineScript(
         sin: Math.sin, cos: Math.cos, tan: Math.tan,
         pi: Math.PI, phi: 1.618033988749895,
         tostring: (v: number, dec?: number) => dec !== undefined ? v.toFixed(dec) : String(v),
+    };
+
+    // ── array namespace ──────────────────────────────────────────
+    const array = {
+        new_float: (size = 0, initial_value = 0) => Array(size).fill(initial_value),
+        new_int: (size = 0, initial_value = 0) => Array(size).fill(initial_value),
+        new_bool: (size = 0, initial_value = false) => Array(size).fill(initial_value),
+        new_string: (size = 0, initial_value = '') => Array(size).fill(initial_value),
+        new_color: (size = 0, initial_value = '#000000') => Array(size).fill(initial_value),
+        new_line: (size = 0) => Array(size).fill(null),
+        new_label: (size = 0) => Array(size).fill(null),
+        new_box: (size = 0) => Array(size).fill(null),
+        get: (arr: any[], index: number) => arr[index],
+        set: (arr: any[], index: number, value: any) => { arr[index] = value; },
+        push: (arr: any[], value: any) => { arr.push(value); },
+        pop: (arr: any[]) => arr.pop(),
+        unshift: (arr: any[], value: any) => { arr.unshift(value); },
+        shift: (arr: any[]) => arr.shift(),
+        insert: (arr: any[], index: number, value: any) => { arr.splice(index, 0, value); },
+        remove: (arr: any[], index: number) => arr.splice(index, 1)[0],
+        clear: (arr: any[]) => { arr.length = 0; },
+        size: (arr: any[]) => arr?.length ?? 0,
+        slice: (arr: any[], from: number, to?: number) => arr.slice(from, to),
+        concat: (arr1: any[], arr2: any[]) => arr1.concat(arr2),
+        copy: (arr: any[]) => [...arr],
+        reverse: (arr: any[]) => { arr.reverse(); },
+        sort: (arr: any[], order: 'asc' | 'desc' = 'asc') => {
+            arr.sort((a, b) => order === 'asc' ? a - b : b - a);
+        },
+        min: (arr: number[]) => Math.min(...arr),
+        max: (arr: number[]) => Math.max(...arr),
+        sum: (arr: number[]) => arr.reduce((a, b) => a + b, 0),
+        avg: (arr: number[]) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0,
+        stdev: (arr: number[]) => {
+            if (!arr.length) return 0;
+            const avg = arr.reduce((a, b) => a + b, 0) / arr.length;
+            const variance = arr.reduce((sum, val) => sum + Math.pow(val - avg, 2), 0) / arr.length;
+            return Math.sqrt(variance);
+        },
+        includes: (arr: any[], val: any) => arr.includes(val),
+        indexof: (arr: any[], val: any) => arr.indexOf(val),
+        lastindexof: (arr: any[], val: any) => arr.lastIndexOf(val),
+        join: (arr: any[], sep = ',') => arr.join(sep),
+        from: (arr: any[]) => [...arr],
     };
 
     // ── Cache key id helper ──────────────────────────────────────
@@ -1401,6 +1455,7 @@ export function evaluatePineScript(
         if (compiled) {
             compiled.execute(
                 strategy, ta, request, barmerge, input, color, math, syminfo, timeframe,
+                array, barstate,
                 nz, na, fixnan,
                 open, high, low, close, volume,
                 hl2, hlc3, ohlc4,
@@ -1411,6 +1466,7 @@ export function evaluatePineScript(
             const cleaned = transformPineToJs(script, last);
             const fn = new Function(
                 'strategy','ta','request','barmerge','input','color','math','syminfo','timeframe',
+                'array','barstate',
                 'nz','na','fixnan',
                 'open','high','low','close','volume',
                 'hl2','hlc3','ohlc4',
@@ -1420,6 +1476,7 @@ export function evaluatePineScript(
             );
             fn(
                 strategy,ta,request,barmerge,input,color,math,syminfo,timeframe,
+                array,barstate,
                 nz,na,fixnan,
                 open,high,low,close,volume,
                 hl2,hlc3,ohlc4,
@@ -1635,7 +1692,19 @@ export function transformPineToJs(script: string, _last: number): string {
     s = s.replace(/^([ \t]*)\[([a-zA-Z0-9_,\s]+)\]\s*=(?!=)/gm, '$1let [$2] =');
     s = s.replace(/__REASSIGN__/g, '=');
 
-    // 9. Pine logical operators -> JS
+    // 9. Pine for loop translation: for i = start to end [by step] -> for (let i = start; i <= end; i += step)
+    s = s.replace(/^[ \t]*for\s+([a-zA-Z_]\w*)\s*=\s*([^ \t\n\r]+)\s+to\s+([^ \t\n\r]+)(?:\s+by\s+([^ \t\n\r]+))?/gm, (_, varName, start, end, step) => {
+        const inc = step ? `${varName} += ${step}` : `${varName}++`;
+        return `for (let ${varName} = ${start}; ${varName} <= ${end}; ${inc})`;
+    });
+
+    // 10. Pine while loop translation: while condition -> while (condition)
+    s = s.replace(/^[ \t]*while\s+(.+)$/gm, (match, cond) => {
+        if (cond.startsWith('(') && cond.endsWith(')')) return `while ${cond}`;
+        return `while (${cond})`;
+    });
+
+    // 11. Pine logical operators -> JS
     s = s.replace(/\band\b/g, '&&').replace(/\bor\b/g, '||').replace(/\bnot\b/g, '!');
 
     // 10. Indentation blocks -> JS braces
@@ -1826,6 +1895,10 @@ function convertIndentationToBraces(src: string): string {
                     converted = cond.startsWith('(') ? `else if ${cond} {` : `else if (${cond}) {`;
                 } else if (/^else\s*$/.test(converted)) {
                     converted = 'else {';
+                } else if (/^for\s/.test(converted) || /^while\s/.test(converted)) {
+                    if (!converted.endsWith('{')) {
+                        converted = `${converted} {`;
+                    }
                 } else if (/^[a-zA-Z_]\w*\s*\([^)]*\)\s*=>\s*$/.test(converted)) {
                     converted = converted.replace(/^([a-zA-Z_]\w*)\s*\(([^)]*)\)\s*=>\s*$/, 'function $1($2) {');
                 }

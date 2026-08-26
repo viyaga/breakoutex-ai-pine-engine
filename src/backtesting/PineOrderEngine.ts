@@ -696,10 +696,14 @@ export class PineOrderEngine {
                 ? (exitPrice - entryPrice) * qty
                 : (entryPrice - exitPrice) * qty;
 
-        const commission =
-            this.config.commissionType === 'percent'
-                ? (entryPrice * qty + exitPrice * qty) * (this.config.commissionValue / 100)
-                : this.config.commissionValue * 2;
+        let commission = 0;
+        if (this.config.commissionType === 'percent') {
+            commission = (entryPrice * qty + exitPrice * qty) * (this.config.commissionValue / 100);
+        } else if (this.config.commissionType === 'fixed_per_contract') {
+            commission = (qty * this.config.commissionValue) * 2; // entry + exit
+        } else if (this.config.commissionType === 'fixed_per_order') {
+            commission = this.config.commissionValue * 2; // entry order + exit order
+        }
 
         const netPnl = grossPnl - commission;
         const returnPercent = (netPnl / (entryPrice * qty)) * 100;
