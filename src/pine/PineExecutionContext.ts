@@ -1,10 +1,10 @@
 // ================================================================
 // BreakoutEx AI — Pine Execution Context
 //
-// Supplies precomputed indicator data to the Pine interpreter.
+// Supplies precomputed indicator data and flat series to the Pine interpreter.
 //
 // The interpreter remains responsible for Pine semantics.
-// This context provides efficient O(1) historical indicator data access.
+// This context provides efficient O(1) historical indicator and series access.
 // ================================================================
 
 import {
@@ -14,6 +14,14 @@ import {
 import {
     Candle,
 } from '../config/types';
+
+import {
+    SeriesCache,
+} from './SeriesCache';
+
+import {
+    TimeframeCursor,
+} from '../backtesting/TimeframeCursor';
 
 export interface PineExecutionContext {
 
@@ -47,4 +55,14 @@ export interface PineExecutionContext {
      * Key = normalized timeframe ('5m', '15m', '1h', '4h', '1d').
      */
     timeframeIndicators?: Map<string, IndicatorEngine>;
+
+    /**
+     * Pre-allocated flat OHLCV series caches per timeframe.
+     */
+    series?: Map<string, SeriesCache>;
+
+    /**
+     * MTF cursors tracking current visible HTF bar index.
+     */
+    cursors?: Map<string, TimeframeCursor>;
 }

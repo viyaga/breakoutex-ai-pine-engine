@@ -3,19 +3,22 @@
 //
 // Prepared once and reused across multiple strategies.
 //
-// This prevents every strategy from repeatedly:
-// - normalizing candles
-// - sorting candles
-// - creating MTF maps
-// - preparing timeframe metadata
+// Pre-normalizes, validates, sorts, and indexes candle series
+// and multi-timeframe cursors for zero-copy execution.
 // ================================================================
 
 import { Candle } from '../config/types';
 import { normalizeTimeframe } from '../pine/interpreter';
+import { SeriesCache, createSeriesCache } from '../pine/SeriesCache';
+import { TimeframeCursor } from './TimeframeCursor';
 
 export interface BacktestContext {
 
     candleMap: Map<string, Candle[]>;
+
+    series: Map<string, SeriesCache>;
+
+    cursors: Map<string, TimeframeCursor>;
 
     timeframes: string[];
 
@@ -95,10 +98,22 @@ export function createBacktestContext(
         );
     }
 
+    const series = new Map<string, SeriesCache>();
+    const cursors = new Map<string, TimeframeCursor>();
+
+    for (const [timeframe, candles] of normalizedMap.entries()) {
+        series.set(timeframe, createSeriesCache(candles));
+        cursors.set(timeframe, new TimeframeCursor(candles));
+    }
+
     return {
 
         candleMap:
             normalizedMap,
+
+        series,
+
+        cursors,
 
         timeframes:
             Array.from(

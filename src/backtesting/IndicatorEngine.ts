@@ -12,8 +12,8 @@ import * as Ind from '../pine/indicators';
 
 export class IndicatorEngine {
 
-    private readonly cache =
-        new Map<string, number[]>();
+    private readonly numCache = new Map<string, number[]>();
+    private readonly objCache = new Map<string, any>();
 
     private _close?: number[];
     private _open?: number[];
@@ -29,9 +29,8 @@ export class IndicatorEngine {
         period: number,
         source: 'close' | 'open' | 'high' | 'low' = 'close'
     ): number[] {
-
         const src = this.getSourceSeries(source);
-        return this.getOrCalculate(
+        return this.getOrCalculateNum(
             `ema:${period}:${source}`,
             () => Ind.ema(src, period)
         );
@@ -41,9 +40,8 @@ export class IndicatorEngine {
         period: number,
         source: 'close' | 'open' | 'high' | 'low' = 'close'
     ): number[] {
-
         const src = this.getSourceSeries(source);
-        return this.getOrCalculate(
+        return this.getOrCalculateNum(
             `sma:${period}:${source}`,
             () => Ind.sma(src, period)
         );
@@ -53,9 +51,8 @@ export class IndicatorEngine {
         period: number,
         source: 'close' | 'open' | 'high' | 'low' = 'close'
     ): number[] {
-
         const src = this.getSourceSeries(source);
-        return this.getOrCalculate(
+        return this.getOrCalculateNum(
             `wma:${period}:${source}`,
             () => Ind.wma(src, period)
         );
@@ -65,11 +62,32 @@ export class IndicatorEngine {
         period: number,
         source: 'close' | 'open' | 'high' | 'low' = 'close'
     ): number[] {
-
         const src = this.getSourceSeries(source);
-        return this.getOrCalculate(
+        return this.getOrCalculateNum(
             `hma:${period}:${source}`,
             () => Ind.hma(src, period)
+        );
+    }
+
+    dema(
+        period: number,
+        source: 'close' | 'open' | 'high' | 'low' = 'close'
+    ): number[] {
+        const src = this.getSourceSeries(source);
+        return this.getOrCalculateNum(
+            `dema:${period}:${source}`,
+            () => Ind.dema(src, period)
+        );
+    }
+
+    tema(
+        period: number,
+        source: 'close' | 'open' | 'high' | 'low' = 'close'
+    ): number[] {
+        const src = this.getSourceSeries(source);
+        return this.getOrCalculateNum(
+            `tema:${period}:${source}`,
+            () => Ind.tema(src, period)
         );
     }
 
@@ -77,9 +95,8 @@ export class IndicatorEngine {
         period: number,
         source: 'close' | 'open' | 'high' | 'low' = 'close'
     ): number[] {
-
         const src = this.getSourceSeries(source);
-        return this.getOrCalculate(
+        return this.getOrCalculateNum(
             `rma:${period}:${source}`,
             () => Ind.rma(src, period)
         );
@@ -89,21 +106,24 @@ export class IndicatorEngine {
         period: number,
         source: 'close' | 'open' | 'high' | 'low' = 'close'
     ): number[] {
-
         const src = this.getSourceSeries(source);
-        return this.getOrCalculate(
+        return this.getOrCalculateNum(
             `rsi:${period}:${source}`,
             () => Ind.rsi(src, period)
         );
     }
 
-    atr(
-        period: number
-    ): number[] {
-
-        return this.getOrCalculate(
+    atr(period: number): number[] {
+        return this.getOrCalculateNum(
             `atr:${period}`,
             () => Ind.atr(this.candles, period)
+        );
+    }
+
+    cci(period = 20): number[] {
+        return this.getOrCalculateNum(
+            `cci:${period}`,
+            () => Ind.cci(this.candles, period)
         );
     }
 
@@ -111,37 +131,117 @@ export class IndicatorEngine {
         period = 20,
         mult = 2,
         source: 'close' | 'open' | 'high' | 'low' = 'close'
-    ) {
-
-        const src = this.getSourceSeries(source);
-        return Ind.bbands(src, period, mult);
+    ): { middle: number[]; upper: number[]; lower: number[] } {
+        return this.getOrCalculateObj(
+            `bbands:${period}:${mult}:${source}`,
+            () => Ind.bbands(this.getSourceSeries(source), period, mult)
+        );
     }
 
-    donchian(
-        period = 20
-    ) {
+    donchian(period = 20): { upper: number[]; lower: number[]; middle: number[] } {
+        return this.getOrCalculateObj(
+            `donchian:${period}`,
+            () => Ind.donchian(this.candles, period)
+        );
+    }
 
-        return Ind.donchian(this.candles, period);
+    keltner(
+        period = 20,
+        mult = 1.5,
+        atrPeriod = 10
+    ): { upper: number[]; lower: number[]; middle: number[] } {
+        return this.getOrCalculateObj(
+            `keltner:${period}:${mult}:${atrPeriod}`,
+            () => Ind.keltner(this.candles, period, mult, atrPeriod)
+        );
+    }
+
+    macd(
+        fast = 12,
+        slow = 26,
+        signal = 9,
+        source: 'close' | 'open' | 'high' | 'low' = 'close'
+    ): { macdLine: number[]; signalLine: number[]; histogram: number[] } {
+        return this.getOrCalculateObj(
+            `macd:${fast}:${slow}:${signal}:${source}`,
+            () => Ind.macd(this.getSourceSeries(source), fast, slow, signal)
+        );
     }
 
     supertrend(
-        period = 10,
-        factor = 3
-    ) {
+        factor = 3,
+        period = 10
+    ): { supertrend: number[]; direction: number[] } {
+        return this.getOrCalculateObj(
+            `supertrend:${factor}:${period}`,
+            () => Ind.supertrend(this.candles, period, factor)
+        );
+    }
 
-        return Ind.supertrend(this.candles, period, factor);
+    stoch(period = 14): number[] {
+        return this.getOrCalculateNum(
+            `stoch:${period}`,
+            () => Ind.stoch(this.high(), this.low(), this.close(), period)
+        );
+    }
+
+    stochRsi(
+        rsiPeriod = 14,
+        stochPeriod = 14,
+        k = 3,
+        d = 3,
+        source: 'close' | 'open' | 'high' | 'low' = 'close'
+    ): { k: number[]; d: number[] } {
+        return this.getOrCalculateObj(
+            `stochRsi:${rsiPeriod}:${stochPeriod}:${k}:${d}:${source}`,
+            () => Ind.stochRsi(this.getSourceSeries(source), rsiPeriod, stochPeriod, k, d)
+        );
+    }
+
+    mfi(period = 14): number[] {
+        return this.getOrCalculateNum(
+            `mfi:${period}`,
+            () => Ind.mfi(this.candles, period)
+        );
+    }
+
+    adx(period = 14): { adx: number[]; diPlus: number[]; diMinus: number[] } {
+        return this.getOrCalculateObj(
+            `adx:${period}`,
+            () => Ind.adx(this.candles, period)
+        );
+    }
+
+    highest(
+        period: number,
+        source: 'close' | 'open' | 'high' | 'low' = 'high'
+    ): number[] {
+        const src = this.getSourceSeries(source);
+        return this.getOrCalculateNum(
+            `highest:${period}:${source}`,
+            () => Ind.highest(src, period)
+        );
+    }
+
+    lowest(
+        period: number,
+        source: 'close' | 'open' | 'high' | 'low' = 'low'
+    ): number[] {
+        const src = this.getSourceSeries(source);
+        return this.getOrCalculateNum(
+            `lowest:${period}:${source}`,
+            () => Ind.lowest(src, period)
+        );
     }
 
     vwap(): number[] {
-
-        return this.getOrCalculate(
+        return this.getOrCalculateNum(
             'vwap',
             () => Ind.vwap(this.candles)
         );
     }
 
     close(): number[] {
-
         if (!this._close) {
             this._close = this.candles.map(c => c.close);
         }
@@ -149,7 +249,6 @@ export class IndicatorEngine {
     }
 
     open(): number[] {
-
         if (!this._open) {
             this._open = this.candles.map(c => c.open);
         }
@@ -157,7 +256,6 @@ export class IndicatorEngine {
     }
 
     high(): number[] {
-
         if (!this._high) {
             this._high = this.candles.map(c => c.high);
         }
@@ -165,7 +263,6 @@ export class IndicatorEngine {
     }
 
     low(): number[] {
-
         if (!this._low) {
             this._low = this.candles.map(c => c.low);
         }
@@ -173,7 +270,6 @@ export class IndicatorEngine {
     }
 
     volume(): number[] {
-
         if (!this._volume) {
             this._volume = this.candles.map(c => c.volume);
         }
@@ -181,7 +277,6 @@ export class IndicatorEngine {
     }
 
     private getSourceSeries(source: 'close' | 'open' | 'high' | 'low'): number[] {
-
         switch (source) {
             case 'open':
                 return this.open();
@@ -195,29 +290,29 @@ export class IndicatorEngine {
         }
     }
 
-    private getOrCalculate(
+    private getOrCalculateNum(
         key: string,
         calculate: () => number[]
     ): number[] {
-
-        const existing =
-            this.cache.get(key);
-
-        if (
-            existing
-        ) {
-
+        const existing = this.numCache.get(key);
+        if (existing) {
             return existing;
         }
+        const values = calculate();
+        this.numCache.set(key, values);
+        return values;
+    }
 
-        const values =
-            calculate();
-
-        this.cache.set(
-            key,
-            values
-        );
-
+    private getOrCalculateObj<T>(
+        key: string,
+        calculate: () => T
+    ): T {
+        const existing = this.objCache.get(key);
+        if (existing) {
+            return existing;
+        }
+        const values = calculate();
+        this.objCache.set(key, values);
         return values;
     }
 }

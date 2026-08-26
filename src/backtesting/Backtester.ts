@@ -35,6 +35,9 @@ import { PineScriptCache } from './PineScriptCache';
 import { PerformanceTimer, PerformanceTiming } from './PerformanceTimer';
 import { IndicatorEngine } from './IndicatorEngine';
 import { PineExecutionContext } from '../pine/PineExecutionContext';
+import { PineScriptCompiler } from '../pine/CompiledPineScript';
+import { SeriesCache, createSeriesCache } from '../pine/SeriesCache';
+import { TimeframeCursor } from './TimeframeCursor';
 import {
     evaluatePineScript,
     normalizeTimeframe,
@@ -45,6 +48,9 @@ export class Backtester {
 
     private static readonly scriptCache =
         new PineScriptCache();
+
+    private static readonly scriptCompiler =
+        new PineScriptCompiler();
 
     /**
      * Validate a backtest result for consistency.
@@ -143,7 +149,8 @@ export class Backtester {
             options,
             sufficiency.requiredBaseCandles,
             sufficiency.requiredDays,
-            sufficiency.limitingFactor
+            sufficiency.limitingFactor,
+            context
         );
         const simulationMs = PerformanceTimer.now() - simStart;
 
@@ -448,6 +455,10 @@ export class Backtester {
                     options.performance?.enabled ?? false,
                 usePrecomputedIndicators:
                     options.performance?.usePrecomputedIndicators ?? true,
+                useCompiledScript:
+                    options.performance?.useCompiledScript ?? true,
+                zeroCopySnapshots:
+                    options.performance?.zeroCopySnapshots ?? false,
             },
         };
     }
@@ -582,7 +593,8 @@ export class Backtester {
         options: Required<BacktestOptions>,
         requiredBaseCandles: number,
         requiredDays: number,
-        limitingFactor: string
+        limitingFactor: string,
+        context?: BacktestContext
     ): BacktestResult {
 
         const testCandles =
@@ -705,6 +717,16 @@ export class Backtester {
                 }
             }
 
+            const series = context?.series ?? new Map<string, SeriesCache>();
+            const cursors = context?.cursors ?? new Map<string, TimeframeCursor>();
+            if (!context?.series) {
+                for (const [tf, cList] of candleMap.entries()) {
+                    const norm = normalizeTimeframe(tf);
+                    series.set(norm, createSeriesCache(cList));
+                    cursors.set(norm, new TimeframeCursor(cList));
+                }
+            }
+
             executionContext = {
                 currentBarIndex: testStartIndex,
                 testStartIndex,
@@ -712,8 +734,18 @@ export class Backtester {
                 candles: baseCandles,
                 indicators: baseIndicatorEngine,
                 timeframeIndicators,
+                series,
+                cursors,
             };
         }
+
+        // ------------------------------------------------------------
+        // Precompile Pine Script (once per strategy)
+        // ------------------------------------------------------------
+
+        const compiledScript = options.performance?.useCompiledScript
+            ? Backtester.scriptCompiler.compile(strategy.pineScript)
+            : undefined;
 
         // ------------------------------------------------------------
         // Historical Data Feed
@@ -1162,19 +1194,16 @@ export class Backtester {
                         currentBar.timestamp
                     );
 
-                    const sliceMap =
-                        dataFeed.getSnapshot();
-
-                    // ------------------------------------------------
-                    // Evaluate Pine
-                    // ------------------------------------------------
-
                     if (executionContext) {
                         executionContext.currentBarIndex =
                             executionContext.testStartIndex + i;
                         executionContext.currentTimestamp =
                             currentBar.timestamp;
                     }
+
+                    const sliceMap = executionContext
+                        ? candleMap
+                        : dataFeed.getSnapshot();
 
                     const signal =
                         evaluatePineScript(
@@ -1184,6 +1213,8 @@ export class Backtester {
                             {
                                 calculateConfluenceScore: false,
                                 executionContext,
+                                compiledScript,
+                                useCompiledScript: options.performance?.useCompiledScript,
                             }
                         );
 

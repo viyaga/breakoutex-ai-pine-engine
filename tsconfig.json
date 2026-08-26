@@ -12,5 +12,14 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/scripts/audit-candle-parity.ts",
+    "src/scripts/debug-align.ts",
+    "src/scripts/debug-bar-73.ts",
+    "src/scripts/debug-candle-parity.ts",
+    "src/scripts/debug-donchian-parity.ts",
+    "src/scripts/test-cross-engine-parity.ts"
+  ]
 }

@@ -291,6 +291,8 @@ export interface BacktestOptions {
     performance?: {
         enabled?: boolean;
         usePrecomputedIndicators?: boolean;
+        useCompiledScript?: boolean;
+        zeroCopySnapshots?: boolean;
     };
 }
 
