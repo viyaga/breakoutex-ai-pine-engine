@@ -1,470 +1,2494 @@
+// ================================================================
+// BreakoutEx AI — Pine Indicator Runtime
+//
+// Canonical indicator implementation used by:
+//
+//   Pine interpreter
+//   IndicatorEngine
+//   MTF indicator engines
+//
+// Design goals:
+//   - Pine-compatible warmup / NaN behavior
+//   - No slice()/reduce()/spread in rolling hot paths
+//   - O(n) rolling calculations where practical
+//   - Stable array lengths
+//   - Deterministic results
+//   - Preserve existing public API
+// ================================================================
+
 import { Candle } from '../config/types';
 
 // ================================================================
-// PINE SCRIPT INDICATOR LIBRARY  (v2 — audited & fixed)
-// Zero external dependencies. Pure TypeScript, blazing fast.
+// Validation helpers
 // ================================================================
 
-// ── EMA ─────────────────────────────────────────────────────────
-export function ema(src: number[], period: number): number[] {
-    if (!src.length || period <= 0) return src.map(() => NaN);
+function validPeriod(period: number): boolean {
+    return (
+        Number.isFinite(period) &&
+        Number.isInteger(period) &&
+        period > 0
+    );
+}
+
+function invalidPeriodResult(
+    length: number
+): number[] {
+    return new Array<number>(length).fill(NaN);
+}
+
+// ================================================================
+// EMA
+// ================================================================
+//
+// Pine-style EMA seed:
+//
+// First valid source value is used as the initial EMA.
+// Subsequent values use:
+//   EMA = src * k + previousEMA * (1-k)
+//
+// ================================================================
+
+export function ema(
+    src: readonly number[],
+    period: number
+): number[] {
+    const n = src.length;
+
+    if (
+        n === 0 ||
+        !validPeriod(period)
+    ) {
+        return invalidPeriodResult(n);
+    }
+
+    const result = new Array<number>(n).fill(NaN);
+
     const k = 2 / (period + 1);
-    const result: number[] = new Array(src.length).fill(NaN);
-    let start = 0;
-    while (start < src.length && isNaN(src[start])) start++;
-    if (start >= src.length) return result;
-    result[start] = src[start];
-    for (let i = start + 1; i < src.length; i++) {
-        result[i] = isNaN(src[i]) ? result[i - 1] : src[i] * k + result[i - 1] * (1 - k);
+
+    let first = -1;
+
+    for (let i = 0; i < n; i++) {
+        if (!Number.isNaN(src[i])) {
+            first = i;
+            break;
+        }
     }
+
+    if (first < 0) {
+        return result;
+    }
+
+    result[first] = src[first];
+
+    for (let i = first + 1; i < n; i++) {
+        const value = src[i];
+
+        if (Number.isNaN(value)) {
+            result[i] = result[i - 1];
+            continue;
+        }
+
+        result[i] =
+            value * k +
+            result[i - 1] * (1 - k);
+    }
+
     return result;
 }
 
-// ── SMA ─────────────────────────────────────────────────────────
-export function sma(src: number[], period: number): number[] {
-    const result: number[] = new Array(src.length).fill(NaN);
-    for (let i = period - 1; i < src.length; i++) {
-        let sum = 0;
-        for (let j = i - period + 1; j <= i; j++) sum += src[j];
-        result[i] = sum / period;
+// ================================================================
+// SMA
+// ================================================================
+
+export function sma(
+    src: readonly number[],
+    period: number
+): number[] {
+    const n = src.length;
+
+    if (
+        n === 0 ||
+        !validPeriod(period)
+    ) {
+        return invalidPeriodResult(n);
     }
+
+    const result = new Array<number>(n).fill(NaN);
+
+    let sum = 0;
+    let validCount = 0;
+
+    for (let i = 0; i < n; i++) {
+        const value = src[i];
+
+        if (!Number.isNaN(value)) {
+            sum += value;
+            validCount++;
+        }
+
+        const removeIndex =
+            i - period;
+
+        if (removeIndex >= 0) {
+            const old = src[removeIndex];
+
+            if (!Number.isNaN(old)) {
+                sum -= old;
+                validCount--;
+            }
+        }
+
+        if (
+            i >= period - 1 &&
+            validCount === period
+        ) {
+            result[i] =
+                sum / period;
+        }
+    }
+
     return result;
 }
 
-// ── WMA (Weighted MA) ────────────────────────────────────────────
-export function wma(src: number[], period: number): number[] {
-    const result: number[] = new Array(src.length).fill(NaN);
-    const weight = (period * (period + 1)) / 2;
-    for (let i = period - 1; i < src.length; i++) {
-        let sum = 0;
-        for (let j = 0; j < period; j++) sum += src[i - j] * (period - j);
-        result[i] = sum / weight;
+// ================================================================
+// WMA
+// ================================================================
+
+export function wma(
+    src: readonly number[],
+    period: number
+): number[] {
+    const n = src.length;
+
+    if (
+        n === 0 ||
+        !validPeriod(period)
+    ) {
+        return invalidPeriodResult(n);
     }
+
+    const result = new Array<number>(n).fill(NaN);
+
+    const weight =
+        (period * (period + 1)) / 2;
+
+    let valid = 0;
+
+    for (let i = 0; i < n; i++) {
+        const value = src[i];
+
+        if (!Number.isNaN(value)) {
+            valid++;
+        }
+
+        const removeIndex =
+            i - period;
+
+        if (removeIndex >= 0) {
+            const old = src[removeIndex];
+
+            if (!Number.isNaN(old)) {
+                valid--;
+            }
+        }
+
+        if (
+            i >= period - 1 &&
+            valid === period
+        ) {
+            let weightedExact = 0;
+
+            for (
+                let j = 0;
+                j < period;
+                j++
+            ) {
+                const v =
+                    src[i - j];
+
+                if (Number.isNaN(v)) {
+                    weightedExact = NaN;
+                    break;
+                }
+
+                weightedExact +=
+                    v * (period - j);
+            }
+
+            if (!Number.isNaN(weightedExact)) {
+                result[i] =
+                    weightedExact / weight;
+            }
+        }
+    }
+
     return result;
 }
 
-// ── HMA (Hull MA) ────────────────────────────────────────────────
-export function hma(src: number[], period: number): number[] {
-    const half = Math.floor(period / 2);
-    const sqrtP = Math.round(Math.sqrt(period));
-    const wma1 = wma(src, half);
-    const wma2 = wma(src, period);
-    const diff = wma1.map((v, i) => 2 * v - wma2[i]);
-    return wma(diff, sqrtP);
+// ================================================================
+// HMA
+// ================================================================
+
+export function hma(
+    src: readonly number[],
+    period: number
+): number[] {
+    const n = src.length;
+
+    if (
+        n === 0 ||
+        !validPeriod(period)
+    ) {
+        return invalidPeriodResult(n);
+    }
+
+    const half =
+        Math.max(1, Math.floor(period / 2));
+
+    const sqrtPeriod =
+        Math.max(
+            1,
+            Math.round(Math.sqrt(period))
+        );
+
+    const wmaHalf =
+        wma(src, half);
+
+    const wmaFull =
+        wma(src, period);
+
+    const diff =
+        new Array<number>(n).fill(NaN);
+
+    for (let i = 0; i < n; i++) {
+        if (
+            Number.isNaN(wmaHalf[i]) ||
+            Number.isNaN(wmaFull[i])
+        ) {
+            continue;
+        }
+
+        diff[i] =
+            2 * wmaHalf[i] -
+            wmaFull[i];
+    }
+
+    return wma(
+        diff,
+        sqrtPeriod
+    );
 }
 
-// ── DEMA (Double EMA) ────────────────────────────────────────────
-export function dema(src: number[], period: number): number[] {
+// ================================================================
+// DEMA
+// ================================================================
+
+export function dema(
+    src: readonly number[],
+    period: number
+): number[] {
     const e1 = ema(src, period);
     const e2 = ema(e1, period);
-    return e1.map((v, i) => 2 * v - e2[i]);
+
+    const result =
+        new Array<number>(src.length).fill(NaN);
+
+    for (let i = 0; i < src.length; i++) {
+        if (
+            Number.isNaN(e1[i]) ||
+            Number.isNaN(e2[i])
+        ) {
+            continue;
+        }
+
+        result[i] =
+            2 * e1[i] -
+            e2[i];
+    }
+
+    return result;
 }
 
-// ── TEMA (Triple EMA) ────────────────────────────────────────────
-export function tema(src: number[], period: number): number[] {
+// ================================================================
+// TEMA
+// ================================================================
+
+export function tema(
+    src: readonly number[],
+    period: number
+): number[] {
     const e1 = ema(src, period);
     const e2 = ema(e1, period);
     const e3 = ema(e2, period);
-    return e1.map((v, i) => 3 * v - 3 * e2[i] + e3[i]);
-}
 
-// ── RMA (Wilder's smoothing — used by RSI/ATR) ──────────────────
-export function rma(src: number[], period: number): number[] {
-    if (!src.length) return [];
-    const result: number[] = new Array(src.length).fill(NaN);
-    // Find first index where we have `period` non-NaN values
-    let seedSum = 0;
-    let count   = 0;
-    let seedEnd = -1;
-    for (let i = 0; i < src.length; i++) {
-        if (!isNaN(src[i])) {
-            seedSum += src[i];
-            count++;
-            if (count === period) { seedEnd = i; break; }
-        }
-    }
-    if (seedEnd === -1) return result;
-    result[seedEnd] = seedSum / period;
-    for (let i = seedEnd + 1; i < src.length; i++) {
-        const v = isNaN(src[i]) ? result[i - 1] : src[i];
-        result[i] = (result[i - 1] * (period - 1) + v) / period;
-    }
-    return result;
-}
-
-// ── ATR ─────────────────────────────────────────────────────────
-export function atr(candles: Candle[], period: number): number[] {
-    if (candles.length < 2) return candles.map(() => NaN);
-    const tr: number[] = candles.map((c, i) => {
-        if (i === 0) return c.high - c.low;
-        const prev = candles[i - 1].close;
-        return Math.max(c.high - c.low, Math.abs(c.high - prev), Math.abs(c.low - prev));
-    });
-    return rma(tr, period);
-}
-
-// ── RSI ─────────────────────────────────────────────────────────
-export function rsi(src: number[], period: number): number[] {
-    const gains: number[] = [0];
-    const losses: number[] = [0];
-    for (let i = 1; i < src.length; i++) {
-        const diff = src[i] - src[i - 1];
-        gains.push(diff > 0 ? diff : 0);
-        losses.push(diff < 0 ? -diff : 0);
-    }
-    const avgGain = rma(gains, period);
-    const avgLoss = rma(losses, period);
-    return avgGain.map((g, i) => {
-        const l = avgLoss[i];
-        if (isNaN(g) || isNaN(l)) return NaN;
-        if (l === 0) return 100;
-        return 100 - 100 / (1 + g / l);
-    });
-}
-
-// ── MACD ─────────────────────────────────────────────────────────
-export function macd(src: number[], fast = 12, slow = 26, signal = 9): {
-    macdLine: number[]; signalLine: number[]; histogram: number[];
-} {
-    const fastEma   = ema(src, fast);
-    const slowEma   = ema(src, slow);
-    const macdLine  = fastEma.map((f, i) => f - slowEma[i]);
-    const signalLine = ema(macdLine, signal);
-    const histogram  = macdLine.map((m, i) => m - signalLine[i]);
-    return { macdLine, signalLine, histogram };
-}
-
-// ── Bollinger Bands ──────────────────────────────────────────────
-export function bbands(src: number[], period = 20, mult = 2): {
-    upper: number[]; middle: number[]; lower: number[];
-    width: number[]; percentB: number[];
-} {
-    const middle = sma(src, period);
-    const upper: number[]   = [];
-    const lower: number[]   = [];
-    const width: number[]   = [];
-    const percentB: number[] = [];
+    const result =
+        new Array<number>(src.length).fill(NaN);
 
     for (let i = 0; i < src.length; i++) {
-        if (isNaN(middle[i])) {
-            upper.push(NaN); lower.push(NaN); width.push(NaN); percentB.push(NaN);
+        if (
+            Number.isNaN(e1[i]) ||
+            Number.isNaN(e2[i]) ||
+            Number.isNaN(e3[i])
+        ) {
             continue;
         }
-        const slice = src.slice(i - period + 1, i + 1);
-        const m = middle[i];
-        const std = Math.sqrt(slice.reduce((acc, v) => acc + (v - m) ** 2, 0) / period);
-        const u = m + mult * std;
-        const l = m - mult * std;
-        upper.push(u);
-        lower.push(l);
-        width.push((u - l) / m);
-        percentB.push((src[i] - l) / (u - l));
+
+        result[i] =
+            3 * e1[i] -
+            3 * e2[i] +
+            e3[i];
     }
-    return { upper, middle, lower, width, percentB };
+
+    return result;
 }
 
-export const bollinger = bbands;
+// ================================================================
+// RMA / Wilder Moving Average
+// ================================================================
 
-// ── Donchian Channels ─────────────────────────────────────────────
-export function donchian(candles: Candle[], period = 20): {
-    upper: number[]; lower: number[]; middle: number[];
-} {
-    const highs = candles.map(c => c.high);
-    const lows = candles.map(c => c.low);
-    const upper = highest(highs, period);
-    const lower = lowest(lows, period);
-    const middle = upper.map((u, i) => (isNaN(u) || isNaN(lower[i])) ? NaN : (u + lower[i]) / 2);
-    return { upper, lower, middle };
+export function rma(
+    src: readonly number[],
+    period: number
+): number[] {
+    const n = src.length;
+
+    if (
+        n === 0 ||
+        !validPeriod(period)
+    ) {
+        return invalidPeriodResult(n);
+    }
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    let sum = 0;
+    let count = 0;
+    let seedIndex = -1;
+
+    for (let i = 0; i < n; i++) {
+        const value = src[i];
+
+        if (Number.isNaN(value)) {
+            continue;
+        }
+
+        sum += value;
+        count++;
+
+        if (count === period) {
+            seedIndex = i;
+            break;
+        }
+    }
+
+    if (seedIndex < 0) {
+        return result;
+    }
+
+    result[seedIndex] =
+        sum / period;
+
+    for (
+        let i = seedIndex + 1;
+        i < n;
+        i++
+    ) {
+        const value = src[i];
+
+        if (Number.isNaN(value)) {
+            result[i] =
+                result[i - 1];
+
+            continue;
+        }
+
+        result[i] =
+            (
+                result[i - 1] *
+                    (period - 1) +
+                value
+            ) / period;
+    }
+
+    return result;
 }
 
-// ── Keltner Channels ──────────────────────────────────────────────
-export function keltner(candles: Candle[], period = 20, mult = 1.5, atrPeriod = 10): {
-    upper: number[]; lower: number[]; middle: number[];
-} {
-    const closes = candles.map(c => c.close);
-    const middle = ema(closes, period);
-    const atrArr = atr(candles, atrPeriod);
-    const upper = middle.map((m, i) => isNaN(m) || isNaN(atrArr[i]) ? NaN : m + mult * atrArr[i]);
-    const lower = middle.map((m, i) => isNaN(m) || isNaN(atrArr[i]) ? NaN : m - mult * atrArr[i]);
-    return { upper, lower, middle };
-}
+// ================================================================
+// True Range
+// ================================================================
 
-// ── Money Flow Index (MFI) ───────────────────────────────────────
-export function mfi(candles: Candle[], period = 14): number[] {
+function trueRange(
+    candles: readonly Candle[] | Candle[]
+): number[] {
     const n = candles.length;
-    const tp = candles.map(c => (c.high + c.low + c.close) / 3);
-    const rmf = tp.map((p, i) => p * candles[i].volume);
 
-    const posFlow: number[] = new Array(n).fill(0);
-    const negFlow: number[] = new Array(n).fill(0);
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    if (n === 0) {
+        return result;
+    }
+
+    result[0] =
+        candles[0].high -
+        candles[0].low;
 
     for (let i = 1; i < n; i++) {
-        if (tp[i] > tp[i - 1]) posFlow[i] = rmf[i];
-        else if (tp[i] < tp[i - 1]) negFlow[i] = rmf[i];
+        const current =
+            candles[i];
+
+        const previousClose =
+            candles[i - 1].close;
+
+        result[i] =
+            Math.max(
+                current.high -
+                    current.low,
+
+                Math.abs(
+                    current.high -
+                    previousClose
+                ),
+
+                Math.abs(
+                    current.low -
+                    previousClose
+                )
+            );
     }
 
-    const posSum = sum(posFlow, period);
-    const negSum = sum(negFlow, period);
-
-    return posSum.map((pos, i) => {
-        const neg = negSum[i];
-        if (isNaN(pos) || isNaN(neg) || neg === 0) return 50;
-        const mr = pos / neg;
-        return 100 - (100 / (1 + mr));
-    });
+    return result;
 }
 
-// ── VWAP (resets at UTC midnight each day) ───────────────────────
-export function vwap(candles: Candle[]): number[] {
-    let cumVolume = 0;
-    let cumTPV    = 0;
-    let lastDay   = -1;
-    return candles.map(c => {
-        const day = Math.floor(c.timestamp / 86_400_000);
-        if (day !== lastDay) { cumVolume = 0; cumTPV = 0; lastDay = day; }
-        const tp = (c.high + c.low + c.close) / 3;
-        cumTPV    += tp * c.volume;
-        cumVolume += c.volume;
-        return cumVolume === 0 ? NaN : cumTPV / cumVolume;
-    });
+// ================================================================
+// ATR
+// ================================================================
+
+export function atr(
+    candles: readonly Candle[] | Candle[],
+    period: number
+): number[] {
+    if (
+        !validPeriod(period)
+    ) {
+        return invalidPeriodResult(
+            candles.length
+        );
+    }
+
+    return rma(
+        trueRange(candles),
+        period
+    );
 }
 
-// ── CCI (Commodity Channel Index) ────────────────────────────────
-export function cci(candles: Candle[], period = 20): number[] {
-    const tp    = candles.map(c => (c.high + c.low + c.close) / 3);
-    const tpSma = sma(tp, period);
-    return tp.map((v, i) => {
-        if (isNaN(tpSma[i])) return NaN;
-        const slice = tp.slice(i - period + 1, i + 1);
-        const mean  = tpSma[i];
-        const mad   = slice.reduce((acc, x) => acc + Math.abs(x - mean), 0) / period;
-        return mad === 0 ? 0 : (v - mean) / (0.015 * mad);
-    });
-}
+// ================================================================
+// RSI
+// ================================================================
 
-// ── Stochastic (%K) ───────────────────────────────────────────────
-export function stoch(src: number[], hi: number[], lo: number[], period: number): number[] {
-    return src.map((v, i) => {
-        if (i < period - 1) return NaN;
-        const hh = Math.max(...hi.slice(i - period + 1, i + 1));
-        const ll = Math.min(...lo.slice(i - period + 1, i + 1));
-        return hh === ll ? 0 : (v - ll) / (hh - ll) * 100;
-    });
-}
+export function rsi(
+    src: readonly number[],
+    period: number
+): number[] {
+    const n = src.length;
 
-// ── Stochastic RSI ────────────────────────────────────────────────
-export function stochRsi(src: number[], rsiPeriod = 14, stochPeriod = 14, smoothK = 3, smoothD = 3): {
-    k: number[]; d: number[];
-} {
-    const rsiArr = rsi(src, rsiPeriod);
-    const stochArr: number[] = rsiArr.map((v, i) => {
-        if (i < stochPeriod - 1 || isNaN(v)) return NaN;
-        const slice = rsiArr.slice(i - stochPeriod + 1, i + 1).filter(x => !isNaN(x));
-        if (!slice.length) return NaN;
-        const lo = Math.min(...slice);
-        const hi = Math.max(...slice);
-        return hi === lo ? 0 : (v - lo) / (hi - lo) * 100;
-    });
-    const k = sma(stochArr, smoothK);
-    const d = sma(k, smoothD);
-    return { k, d };
-}
+    if (
+        n === 0 ||
+        !validPeriod(period)
+    ) {
+        return invalidPeriodResult(n);
+    }
 
-// ── ADX / DMI ────────────────────────────────────────────────────
-export function adx(candles: Candle[], period = 14): {
-    adx: number[]; diPlus: number[]; diMinus: number[];
-} {
-    const n = candles.length;
-    const trArr: number[]     = new Array(n).fill(NaN);
-    const dmPlus: number[]    = new Array(n).fill(0);
-    const dmMinus: number[]   = new Array(n).fill(0);
+    const gains =
+        new Array<number>(n).fill(NaN);
+
+    const losses =
+        new Array<number>(n).fill(NaN);
+
+    gains[0] = 0;
+    losses[0] = 0;
 
     for (let i = 1; i < n; i++) {
-        const c = candles[i], p = candles[i - 1];
-        trArr[i]   = Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
-        const upMove   = c.high - p.high;
-        const downMove = p.low - c.low;
-        dmPlus[i]  = (upMove > downMove && upMove > 0) ? upMove  : 0;
-        dmMinus[i] = (downMove > upMove && downMove > 0) ? downMove : 0;
+        const current =
+            src[i];
+
+        const previous =
+            src[i - 1];
+
+        if (
+            Number.isNaN(current) ||
+            Number.isNaN(previous)
+        ) {
+            continue;
+        }
+
+        const difference =
+            current - previous;
+
+        gains[i] =
+            difference > 0
+                ? difference
+                : 0;
+
+        losses[i] =
+            difference < 0
+                ? -difference
+                : 0;
     }
 
-    const smoothTR    = rma(trArr,   period);
-    const smoothPlus  = rma(dmPlus,  period);
-    const smoothMinus = rma(dmMinus, period);
+    const avgGain =
+        rma(gains, period);
 
-    const diPlus  = smoothPlus.map((v, i)  => smoothTR[i] ? (v / smoothTR[i]) * 100 : NaN);
-    const diMinus = smoothMinus.map((v, i) => smoothTR[i] ? (v / smoothTR[i]) * 100 : NaN);
-    const dx      = diPlus.map((p, i) => {
-        const sum = p + diMinus[i];
-        return sum === 0 ? 0 : (Math.abs(p - diMinus[i]) / sum) * 100;
-    });
-    const adxArr = rma(dx, period);
+    const avgLoss =
+        rma(losses, period);
 
-    return { adx: adxArr, diPlus, diMinus };
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    for (let i = 0; i < n; i++) {
+        const gain =
+            avgGain[i];
+
+        const loss =
+            avgLoss[i];
+
+        if (
+            Number.isNaN(gain) ||
+            Number.isNaN(loss)
+        ) {
+            continue;
+        }
+
+        if (loss === 0) {
+            result[i] =
+                gain === 0
+                    ? 50
+                    : 100;
+
+            continue;
+        }
+
+        const rs =
+            gain / loss;
+
+        result[i] =
+            100 -
+            100 / (1 + rs);
+    }
+
+    return result;
 }
 
-// ── Supertrend ───────────────────────────────────────────────────
-export function supertrend(candles: Candle[], atrPeriod = 10, multiplier = 3): {
-    supertrend: number[]; direction: number[]; // 1=up(bull), -1=down(bear)
+// ================================================================
+// MACD
+// ================================================================
+
+export function macd(
+    src: readonly number[],
+    fast = 12,
+    slow = 26,
+    signal = 9
+): {
+    macdLine: number[];
+    signalLine: number[];
+    histogram: number[];
 } {
-    const atrArr = atr(candles, atrPeriod);
-    const hl2Arr = candles.map(c => (c.high + c.low) / 2);
-    const n = candles.length;
+    const fastEma =
+        ema(src, fast);
 
-    const upperBand: number[] = new Array(n).fill(NaN);
-    const lowerBand: number[] = new Array(n).fill(NaN);
-    const supertrendArr: number[] = new Array(n).fill(NaN);
-    const direction: number[]     = new Array(n).fill(1);
+    const slowEma =
+        ema(src, slow);
 
-    for (let i = atrPeriod; i < n; i++) {
-        const basicUpper = hl2Arr[i] + multiplier * atrArr[i];
-        const basicLower = hl2Arr[i] - multiplier * atrArr[i];
+    const n = src.length;
 
-        upperBand[i] = (i > 0 && basicUpper < (upperBand[i - 1] ?? basicUpper)) || candles[i - 1]?.close > (upperBand[i - 1] ?? 0)
-            ? basicUpper : upperBand[i - 1] ?? basicUpper;
-        lowerBand[i] = (i > 0 && basicLower > (lowerBand[i - 1] ?? basicLower)) || candles[i - 1]?.close < (lowerBand[i - 1] ?? 0)
-            ? basicLower : lowerBand[i - 1] ?? basicLower;
+    const macdLine =
+        new Array<number>(n).fill(NaN);
 
-        if (i === atrPeriod) { direction[i] = 1; supertrendArr[i] = lowerBand[i]; continue; }
+    for (let i = 0; i < n; i++) {
+        if (
+            Number.isNaN(
+                fastEma[i]
+            ) ||
+            Number.isNaN(
+                slowEma[i]
+            )
+        ) {
+            continue;
+        }
 
-        if (direction[i - 1] === -1 && candles[i].close > upperBand[i]) {
+        macdLine[i] =
+            fastEma[i] -
+            slowEma[i];
+    }
+
+    const signalLine =
+        ema(
+            macdLine,
+            signal
+        );
+
+    const histogram =
+        new Array<number>(n).fill(NaN);
+
+    for (let i = 0; i < n; i++) {
+        if (
+            Number.isNaN(
+                macdLine[i]
+            ) ||
+            Number.isNaN(
+                signalLine[i]
+            )
+        ) {
+            continue;
+        }
+
+        histogram[i] =
+            macdLine[i] -
+            signalLine[i];
+    }
+
+    return {
+        macdLine,
+        signalLine,
+        histogram,
+    };
+}
+
+// ================================================================
+// Rolling standard deviation
+// ================================================================
+
+export function stdev(
+    src: readonly number[],
+    period: number
+): number[] {
+    const n = src.length;
+
+    if (
+        n === 0 ||
+        !validPeriod(period)
+    ) {
+        return invalidPeriodResult(n);
+    }
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    let sum = 0;
+    let sumSquares = 0;
+    let valid = 0;
+
+    for (let i = 0; i < n; i++) {
+        const value =
+            src[i];
+
+        if (!Number.isNaN(value)) {
+            sum += value;
+            sumSquares +=
+                value * value;
+            valid++;
+        }
+
+        const remove =
+            i - period;
+
+        if (remove >= 0) {
+            const old =
+                src[remove];
+
+            if (!Number.isNaN(old)) {
+                sum -= old;
+                sumSquares -=
+                    old * old;
+                valid--;
+            }
+        }
+
+        if (
+            i >= period - 1 &&
+            valid === period
+        ) {
+            const mean =
+                sum / period;
+
+            const varianceValue =
+                (
+                    sumSquares -
+                    period *
+                        mean *
+                        mean
+                ) / period;
+
+            result[i] =
+                Math.sqrt(
+                    Math.max(
+                        0,
+                        varianceValue
+                    )
+                );
+        }
+    }
+
+    return result;
+}
+
+// ================================================================
+// Bollinger Bands
+// ================================================================
+
+export function bbands(
+    src: readonly number[],
+    period = 20,
+    mult = 2
+): {
+    upper: number[];
+    middle: number[];
+    lower: number[];
+    width: number[];
+    percentB: number[];
+} {
+    const n = src.length;
+
+    const middle =
+        sma(src, period);
+
+    const deviation =
+        stdev(src, period);
+
+    const upper =
+        new Array<number>(n).fill(NaN);
+
+    const lower =
+        new Array<number>(n).fill(NaN);
+
+    const width =
+        new Array<number>(n).fill(NaN);
+
+    const percentB =
+        new Array<number>(n).fill(NaN);
+
+    for (let i = 0; i < n; i++) {
+        const m =
+            middle[i];
+
+        const sd =
+            deviation[i];
+
+        if (
+            Number.isNaN(m) ||
+            Number.isNaN(sd)
+        ) {
+            continue;
+        }
+
+        const u =
+            m + mult * sd;
+
+        const l =
+            m - mult * sd;
+
+        upper[i] = u;
+        lower[i] = l;
+
+        if (m !== 0) {
+            width[i] =
+                (u - l) / m;
+        }
+
+        const range =
+            u - l;
+
+        if (range !== 0) {
+            percentB[i] =
+                (src[i] - l) /
+                range;
+        }
+    }
+
+    return {
+        upper,
+        middle,
+        lower,
+        width,
+        percentB,
+    };
+}
+
+export const bollinger =
+    bbands;
+
+// ================================================================
+// Highest
+// ================================================================
+
+export function highest(
+    src: readonly number[],
+    period: number
+): number[] {
+    const n = src.length;
+
+    if (
+        n === 0 ||
+        !validPeriod(period)
+    ) {
+        return invalidPeriodResult(n);
+    }
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    const deque =
+        new Array<number>(n);
+
+    let head = 0;
+    let tail = 0;
+
+    for (let i = 0; i < n; i++) {
+        const value =
+            src[i];
+
+        while (
+            head < tail &&
+            deque[head] <=
+                i - period
+        ) {
+            head++;
+        }
+
+        if (!Number.isNaN(value)) {
+            while (
+                head < tail &&
+                !Number.isNaN(
+                    src[deque[tail - 1]]
+                ) &&
+                src[deque[tail - 1]] <=
+                    value
+            ) {
+                tail--;
+            }
+
+            deque[tail++] = i;
+        }
+
+        if (i >= period - 1) {
+            if (head < tail) {
+                result[i] =
+                    src[deque[head]];
+            }
+        }
+    }
+
+    return result;
+}
+
+// ================================================================
+// Lowest
+// ================================================================
+
+export function lowest(
+    src: readonly number[],
+    period: number
+): number[] {
+    const n = src.length;
+
+    if (
+        n === 0 ||
+        !validPeriod(period)
+    ) {
+        return invalidPeriodResult(n);
+    }
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    const deque =
+        new Array<number>(n);
+
+    let head = 0;
+    let tail = 0;
+
+    for (let i = 0; i < n; i++) {
+        const value =
+            src[i];
+
+        while (
+            head < tail &&
+            deque[head] <=
+                i - period
+        ) {
+            head++;
+        }
+
+        if (!Number.isNaN(value)) {
+            while (
+                head < tail &&
+                !Number.isNaN(
+                    src[deque[tail - 1]]
+                ) &&
+                src[deque[tail - 1]] >=
+                    value
+            ) {
+                tail--;
+            }
+
+            deque[tail++] = i;
+        }
+
+        if (i >= period - 1) {
+            if (head < tail) {
+                result[i] =
+                    src[deque[head]];
+            }
+        }
+    }
+
+    return result;
+}
+
+// ================================================================
+// Sum
+// ================================================================
+
+export function sum(
+    src: readonly number[],
+    period: number
+): number[] {
+    const n = src.length;
+
+    if (
+        n === 0 ||
+        !validPeriod(period)
+    ) {
+        return invalidPeriodResult(n);
+    }
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    let rolling = 0;
+    let valid = 0;
+
+    for (let i = 0; i < n; i++) {
+        const value =
+            src[i];
+
+        if (!Number.isNaN(value)) {
+            rolling += value;
+            valid++;
+        }
+
+        const remove =
+            i - period;
+
+        if (remove >= 0) {
+            const old =
+                src[remove];
+
+            if (!Number.isNaN(old)) {
+                rolling -= old;
+                valid--;
+            }
+        }
+
+        if (
+            i >= period - 1 &&
+            valid === period
+        ) {
+            result[i] =
+                rolling;
+        }
+    }
+
+    return result;
+}
+
+// ================================================================
+// Variance
+// ================================================================
+
+export function variance(
+    src: readonly number[],
+    period: number
+): number[] {
+    const sd =
+        stdev(src, period);
+
+    for (let i = 0; i < sd.length; i++) {
+        if (!Number.isNaN(sd[i])) {
+            sd[i] =
+                sd[i] * sd[i];
+        }
+    }
+
+    return sd;
+}
+
+// ================================================================
+// Change
+// ================================================================
+
+export function change(
+    src: readonly number[],
+    length = 1
+): number[] {
+    const n = src.length;
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    if (
+        !validPeriod(length)
+    ) {
+        return result;
+    }
+
+    for (
+        let i = length;
+        i < n;
+        i++
+    ) {
+        const current =
+            src[i];
+
+        const previous =
+            src[i - length];
+
+        if (
+            Number.isNaN(current) ||
+            Number.isNaN(previous)
+        ) {
+            continue;
+        }
+
+        result[i] =
+            current - previous;
+    }
+
+    return result;
+}
+
+export function mom(
+    src: readonly number[],
+    length: number
+): number[] {
+    return change(
+        src,
+        length
+    );
+}
+
+// ================================================================
+// Crossover
+// ================================================================
+
+export function crossover(
+    a: readonly number[],
+    b: readonly number[] | number,
+    i: number
+): boolean {
+    if (
+        i <= 0 ||
+        i >= a.length
+    ) {
+        return false;
+    }
+
+    const currentA =
+        a[i];
+
+    const previousA =
+        a[i - 1];
+
+    const currentB =
+        typeof b === 'number'
+            ? b
+            : b[i];
+
+    const previousB =
+        typeof b === 'number'
+            ? b
+            : b[i - 1];
+
+    if (
+        Number.isNaN(currentA) ||
+        Number.isNaN(previousA) ||
+        Number.isNaN(currentB) ||
+        Number.isNaN(previousB)
+    ) {
+        return false;
+    }
+
+    return (
+        previousA <= previousB &&
+        currentA > currentB
+    );
+}
+
+// ================================================================
+// Crossunder
+// ================================================================
+
+export function crossunder(
+    a: readonly number[],
+    b: readonly number[] | number,
+    i: number
+): boolean {
+    if (
+        i <= 0 ||
+        i >= a.length
+    ) {
+        return false;
+    }
+
+    const currentA =
+        a[i];
+
+    const previousA =
+        a[i - 1];
+
+    const currentB =
+        typeof b === 'number'
+            ? b
+            : b[i];
+
+    const previousB =
+        typeof b === 'number'
+            ? b
+            : b[i - 1];
+
+    if (
+        Number.isNaN(currentA) ||
+        Number.isNaN(previousA) ||
+        Number.isNaN(currentB) ||
+        Number.isNaN(previousB)
+    ) {
+        return false;
+    }
+
+    return (
+        previousA >= previousB &&
+        currentA < currentB
+    );
+}
+
+// ================================================================
+// Rising
+// ================================================================
+
+export function rising(
+    src: readonly number[],
+    period: number
+): boolean[] {
+    const n = src.length;
+
+    const result =
+        new Array<boolean>(n).fill(false);
+
+    if (
+        !validPeriod(period)
+    ) {
+        return result;
+    }
+
+    for (let i = period; i < n; i++) {
+        const current =
+            src[i];
+
+        let valid = true;
+
+        for (
+            let j = 0;
+            j < period;
+            j++
+        ) {
+            const previous =
+                src[i - j - 1];
+
+            if (
+                Number.isNaN(current) ||
+                Number.isNaN(previous) ||
+                current <= previous
+            ) {
+                valid = false;
+                break;
+            }
+        }
+
+        result[i] =
+            valid;
+    }
+
+    return result;
+}
+
+// ================================================================
+// Falling
+// ================================================================
+
+export function falling(
+    src: readonly number[],
+    period: number
+): boolean[] {
+    const n = src.length;
+
+    const result =
+        new Array<boolean>(n).fill(false);
+
+    if (
+        !validPeriod(period)
+    ) {
+        return result;
+    }
+
+    for (let i = period; i < n; i++) {
+        const current =
+            src[i];
+
+        let valid = true;
+
+        for (
+            let j = 0;
+            j < period;
+            j++
+        ) {
+            const previous =
+                src[i - j - 1];
+
+            if (
+                Number.isNaN(current) ||
+                Number.isNaN(previous) ||
+                current >= previous
+            ) {
+                valid = false;
+                break;
+            }
+        }
+
+        result[i] =
+            valid;
+    }
+
+    return result;
+}
+
+// ================================================================
+// Donchian Channels
+// ================================================================
+
+export function donchian(
+    candles: readonly Candle[] | Candle[],
+    period = 20
+): {
+    upper: number[];
+    lower: number[];
+    middle: number[];
+} {
+    const highs =
+        new Array<number>(
+            candles.length
+        );
+
+    const lows =
+        new Array<number>(
+            candles.length
+        );
+
+    for (
+        let i = 0;
+        i < candles.length;
+        i++
+    ) {
+        highs[i] =
+            candles[i].high;
+
+        lows[i] =
+            candles[i].low;
+    }
+
+    const upper =
+        highest(
+            highs,
+            period
+        );
+
+    const lower =
+        lowest(
+            lows,
+            period
+        );
+
+    const middle =
+        new Array<number>(
+            candles.length
+        ).fill(NaN);
+
+    for (
+        let i = 0;
+        i < candles.length;
+        i++
+    ) {
+        if (
+            Number.isNaN(upper[i]) ||
+            Number.isNaN(lower[i])
+        ) {
+            continue;
+        }
+
+        middle[i] =
+            (upper[i] +
+                lower[i]) / 2;
+    }
+
+    return {
+        upper,
+        lower,
+        middle,
+    };
+}
+
+// ================================================================
+// Keltner Channels
+// ================================================================
+
+export function keltner(
+    candles: readonly Candle[] | Candle[],
+    period = 20,
+    mult = 1.5,
+    atrPeriod = 10
+): {
+    upper: number[];
+    lower: number[];
+    middle: number[];
+} {
+    const closes =
+        new Array<number>(
+            candles.length
+        );
+
+    for (
+        let i = 0;
+        i < candles.length;
+        i++
+    ) {
+        closes[i] =
+            candles[i].close;
+    }
+
+    const middle =
+        ema(
+            closes,
+            period
+        );
+
+    const atrValues =
+        atr(
+            candles,
+            atrPeriod
+        );
+
+    const upper =
+        new Array<number>(
+            candles.length
+        ).fill(NaN);
+
+    const lower =
+        new Array<number>(
+            candles.length
+        ).fill(NaN);
+
+    for (
+        let i = 0;
+        i < candles.length;
+        i++
+    ) {
+        if (
+            Number.isNaN(
+                middle[i]
+            ) ||
+            Number.isNaN(
+                atrValues[i]
+            )
+        ) {
+            continue;
+        }
+
+        upper[i] =
+            middle[i] +
+            mult * atrValues[i];
+
+        lower[i] =
+            middle[i] -
+            mult * atrValues[i];
+    }
+
+    return {
+        upper,
+        lower,
+        middle,
+    };
+}
+
+// ================================================================
+// MFI
+// ================================================================
+
+export function mfi(
+    candles: readonly Candle[] | Candle[],
+    period = 14
+): number[] {
+    const n =
+        candles.length;
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    if (
+        !validPeriod(period)
+    ) {
+        return result;
+    }
+
+    const positive =
+        new Array<number>(n).fill(0);
+
+    const negative =
+        new Array<number>(n).fill(0);
+
+    const typical =
+        new Array<number>(n).fill(NaN);
+
+    for (let i = 0; i < n; i++) {
+        const c =
+            candles[i];
+
+        typical[i] =
+            (
+                c.high +
+                c.low +
+                c.close
+            ) / 3;
+
+        if (i === 0) {
+            continue;
+        }
+
+        const flow =
+            typical[i] *
+            c.volume;
+
+        if (
+            typical[i] >
+            typical[i - 1]
+        ) {
+            positive[i] =
+                flow;
+        } else if (
+            typical[i] <
+            typical[i - 1]
+        ) {
+            negative[i] =
+                flow;
+        }
+    }
+
+    const positiveSum =
+        sum(
+            positive,
+            period
+        );
+
+    const negativeSum =
+        sum(
+            negative,
+            period
+        );
+
+    for (let i = 0; i < n; i++) {
+        const pos =
+            positiveSum[i];
+
+        const neg =
+            negativeSum[i];
+
+        if (
+            Number.isNaN(pos) ||
+            Number.isNaN(neg)
+        ) {
+            continue;
+        }
+
+        if (neg === 0) {
+            result[i] =
+                pos === 0
+                    ? 50
+                    : 100;
+
+            continue;
+        }
+
+        const ratio =
+            pos / neg;
+
+        result[i] =
+            100 -
+            100 / (1 + ratio);
+    }
+
+    return result;
+}
+
+// ================================================================
+// VWAP
+// ================================================================
+
+export function vwap(
+    candles: readonly Candle[] | Candle[]
+): number[] {
+    const n =
+        candles.length;
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    let cumulativeVolume = 0;
+    let cumulativeTPV = 0;
+    let currentDay = -1;
+
+    for (let i = 0; i < n; i++) {
+        const candle =
+            candles[i];
+
+        const day =
+            Math.floor(
+                candle.timestamp /
+                    86_400_000
+            );
+
+        if (day !== currentDay) {
+            currentDay =
+                day;
+
+            cumulativeVolume =
+                0;
+
+            cumulativeTPV =
+                0;
+        }
+
+        const typical =
+            (
+                candle.high +
+                candle.low +
+                candle.close
+            ) / 3;
+
+        cumulativeTPV +=
+            typical *
+            candle.volume;
+
+        cumulativeVolume +=
+            candle.volume;
+
+        if (
+            cumulativeVolume !== 0
+        ) {
+            result[i] =
+                cumulativeTPV /
+                cumulativeVolume;
+        }
+    }
+
+    return result;
+}
+
+// ================================================================
+// CCI
+// ================================================================
+
+export function cci(
+    candles: readonly Candle[] | Candle[],
+    period = 20
+): number[] {
+    const n =
+        candles.length;
+
+    const typical =
+        new Array<number>(n);
+
+    for (let i = 0; i < n; i++) {
+        typical[i] =
+            (
+                candles[i].high +
+                candles[i].low +
+                candles[i].close
+            ) / 3;
+    }
+
+    const mean =
+        sma(
+            typical,
+            period
+        );
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    for (let i = period - 1; i < n; i++) {
+        if (
+            Number.isNaN(
+                mean[i]
+            )
+        ) {
+            continue;
+        }
+
+        let deviation = 0;
+
+        for (
+            let j = i - period + 1;
+            j <= i;
+            j++
+        ) {
+            deviation +=
+                Math.abs(
+                    typical[j] -
+                    mean[i]
+                );
+        }
+
+        const mad =
+            deviation / period;
+
+        result[i] =
+            mad === 0
+                ? 0
+                : (
+                    typical[i] -
+                    mean[i]
+                ) /
+                (0.015 * mad);
+    }
+
+    return result;
+}
+
+// ================================================================
+// Stochastic
+// ================================================================
+
+export function stoch(
+    src: readonly number[],
+    hi: readonly number[],
+    lo: readonly number[],
+    period: number
+): number[] {
+    const n =
+        src.length;
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    if (
+        !validPeriod(period)
+    ) {
+        return result;
+    }
+
+    for (
+        let i = period - 1;
+        i < n;
+        i++
+    ) {
+        let highestValue =
+            -Infinity;
+
+        let lowestValue =
+            Infinity;
+
+        let valid = true;
+
+        for (
+            let j = i - period + 1;
+            j <= i;
+            j++
+        ) {
+            if (
+                Number.isNaN(hi[j]) ||
+                Number.isNaN(lo[j])
+            ) {
+                valid = false;
+                break;
+            }
+
+            if (
+                hi[j] >
+                highestValue
+            ) {
+                highestValue =
+                    hi[j];
+            }
+
+            if (
+                lo[j] <
+                lowestValue
+            ) {
+                lowestValue =
+                    lo[j];
+            }
+        }
+
+        if (!valid) {
+            continue;
+        }
+
+        const range =
+            highestValue -
+            lowestValue;
+
+        result[i] =
+            range === 0
+                ? 0
+                : (
+                    (
+                        src[i] -
+                        lowestValue
+                    ) /
+                    range
+                ) * 100;
+    }
+
+    return result;
+}
+
+// ================================================================
+// Stochastic RSI
+// ================================================================
+
+export function stochRsi(
+    src: readonly number[],
+    rsiPeriod = 14,
+    stochPeriod = 14,
+    smoothK = 3,
+    smoothD = 3
+): {
+    k: number[];
+    d: number[];
+} {
+    const rsiValues =
+        rsi(
+            src,
+            rsiPeriod
+        );
+
+    const stochastic =
+        new Array<number>(
+            src.length
+        ).fill(NaN);
+
+    for (
+        let i = stochPeriod - 1;
+        i < src.length;
+        i++
+    ) {
+        let lowestValue =
+            Infinity;
+
+        let highestValue =
+            -Infinity;
+
+        let valid = true;
+
+        for (
+            let j =
+                i - stochPeriod + 1;
+            j <= i;
+            j++
+        ) {
+            const value =
+                rsiValues[j];
+
+            if (
+                Number.isNaN(value)
+            ) {
+                valid = false;
+                break;
+            }
+
+            if (
+                value <
+                lowestValue
+            ) {
+                lowestValue =
+                    value;
+            }
+
+            if (
+                value >
+                highestValue
+            ) {
+                highestValue =
+                    value;
+            }
+        }
+
+        if (!valid) {
+            continue;
+        }
+
+        const range =
+            highestValue -
+            lowestValue;
+
+        stochastic[i] =
+            range === 0
+                ? 0
+                : (
+                    (
+                        rsiValues[i] -
+                        lowestValue
+                    ) /
+                    range
+                ) * 100;
+    }
+
+    const k =
+        sma(
+            stochastic,
+            smoothK
+        );
+
+    const d =
+        sma(
+            k,
+            smoothD
+        );
+
+    return {
+        k,
+        d,
+    };
+}
+
+// ================================================================
+// ADX / DMI
+// ================================================================
+
+export function adx(
+    candles: readonly Candle[] | Candle[],
+    period = 14
+): {
+    adx: number[];
+    diPlus: number[];
+    diMinus: number[];
+} {
+    const n =
+        candles.length;
+
+    const tr =
+        new Array<number>(n).fill(NaN);
+
+    const plusDM =
+        new Array<number>(n).fill(0);
+
+    const minusDM =
+        new Array<number>(n).fill(0);
+
+    for (
+        let i = 1;
+        i < n;
+        i++
+    ) {
+        const current =
+            candles[i];
+
+        const previous =
+            candles[i - 1];
+
+        tr[i] =
+            Math.max(
+                current.high -
+                    current.low,
+
+                Math.abs(
+                    current.high -
+                    previous.close
+                ),
+
+                Math.abs(
+                    current.low -
+                    previous.close
+                )
+            );
+
+        const upMove =
+            current.high -
+            previous.high;
+
+        const downMove =
+            previous.low -
+            current.low;
+
+        if (
+            upMove >
+                downMove &&
+            upMove > 0
+        ) {
+            plusDM[i] =
+                upMove;
+        }
+
+        if (
+            downMove >
+                upMove &&
+            downMove > 0
+        ) {
+            minusDM[i] =
+                downMove;
+        }
+    }
+
+    const smoothTR =
+        rma(
+            tr,
+            period
+        );
+
+    const smoothPlus =
+        rma(
+            plusDM,
+            period
+        );
+
+    const smoothMinus =
+        rma(
+            minusDM,
+            period
+        );
+
+    const diPlus =
+        new Array<number>(n).fill(NaN);
+
+    const diMinus =
+        new Array<number>(n).fill(NaN);
+
+    const dx =
+        new Array<number>(n).fill(NaN);
+
+    for (let i = 0; i < n; i++) {
+        if (
+            Number.isNaN(
+                smoothTR[i]
+            ) ||
+            smoothTR[i] === 0
+        ) {
+            continue;
+        }
+
+        diPlus[i] =
+            (
+                smoothPlus[i] /
+                smoothTR[i]
+            ) * 100;
+
+        diMinus[i] =
+            (
+                smoothMinus[i] /
+                smoothTR[i]
+            ) * 100;
+
+        const denominator =
+            diPlus[i] +
+            diMinus[i];
+
+        if (
+            denominator === 0
+        ) {
+            dx[i] = 0;
+        } else {
+            dx[i] =
+                (
+                    Math.abs(
+                        diPlus[i] -
+                        diMinus[i]
+                    ) /
+                    denominator
+                ) * 100;
+        }
+    }
+
+    const adxValues =
+        rma(
+            dx,
+            period
+        );
+
+    return {
+        adx: adxValues,
+        diPlus,
+        diMinus,
+    };
+}
+
+// ================================================================
+// Supertrend
+// ================================================================
+
+export function supertrend(
+    candles: readonly Candle[] | Candle[],
+    atrPeriod = 10,
+    multiplier = 3
+): {
+    supertrend: number[];
+    direction: number[];
+} {
+    const n =
+        candles.length;
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    const direction =
+        new Array<number>(n).fill(1);
+
+    const atrValues =
+        atr(
+            candles,
+            atrPeriod
+        );
+
+    const upper =
+        new Array<number>(n).fill(NaN);
+
+    const lower =
+        new Array<number>(n).fill(NaN);
+
+    for (
+        let i = 0;
+        i < n;
+        i++
+    ) {
+        if (
+            Number.isNaN(
+                atrValues[i]
+            )
+        ) {
+            continue;
+        }
+
+        const midpoint =
+            (
+                candles[i].high +
+                candles[i].low
+            ) / 2;
+
+        const basicUpper =
+            midpoint +
+            multiplier *
+                atrValues[i];
+
+        const basicLower =
+            midpoint -
+            multiplier *
+                atrValues[i];
+
+        if (i === 0) {
+            upper[i] =
+                basicUpper;
+
+            lower[i] =
+                basicLower;
+
+            continue;
+        }
+
+        upper[i] =
+            (
+                basicUpper <
+                    upper[i - 1] ||
+                candles[i - 1].close >
+                    upper[i - 1]
+            )
+                ? basicUpper
+                : upper[i - 1];
+
+        lower[i] =
+            (
+                basicLower >
+                    lower[i - 1] ||
+                candles[i - 1].close <
+                    lower[i - 1]
+            )
+                ? basicLower
+                : lower[i - 1];
+
+        if (
+            direction[i - 1] === -1 &&
+            candles[i].close >
+                upper[i]
+        ) {
             direction[i] = 1;
-        } else if (direction[i - 1] === 1 && candles[i].close < lowerBand[i]) {
+        } else if (
+            direction[i - 1] === 1 &&
+            candles[i].close <
+                lower[i]
+        ) {
             direction[i] = -1;
         } else {
-            direction[i] = direction[i - 1];
+            direction[i] =
+                direction[i - 1];
         }
-        supertrendArr[i] = direction[i] === 1 ? lowerBand[i] : upperBand[i];
+
+        result[i] =
+            direction[i] === 1
+                ? lower[i]
+                : upper[i];
     }
-    return { supertrend: supertrendArr, direction };
+
+    return {
+        supertrend: result,
+        direction,
+    };
 }
 
-// ── Pivot High / Low ─────────────────────────────────────────────
-export function pivothigh(src: number[], leftBars: number, rightBars: number): number[] {
-    const result: number[] = new Array(src.length).fill(NaN);
-    for (let i = leftBars; i < src.length - rightBars; i++) {
-        const v = src[i];
-        let isPivot = true;
-        for (let j = i - leftBars; j <= i + rightBars; j++) {
-            if (j !== i && src[j] >= v) { isPivot = false; break; }
+// ================================================================
+// Pivot High
+// ================================================================
+//
+// The returned value is placed on the pivot bar.
+// A consumer must respect rightBars confirmation delay.
+// ================================================================
+
+export function pivothigh(
+    src: readonly number[],
+    leftBars: number,
+    rightBars: number
+): number[] {
+    const n =
+        src.length;
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    if (
+        leftBars < 0 ||
+        rightBars < 0
+    ) {
+        return result;
+    }
+
+    for (
+        let center = leftBars;
+        center <
+            n - rightBars;
+        center++
+    ) {
+        const value =
+            src[center];
+
+        if (Number.isNaN(value)) {
+            continue;
         }
-        if (isPivot) result[i] = v;
-    }
-    return result;
-}
-export function pivotlow(src: number[], leftBars: number, rightBars: number): number[] {
-    const result: number[] = new Array(src.length).fill(NaN);
-    for (let i = leftBars; i < src.length - rightBars; i++) {
-        const v = src[i];
-        let isPivot = true;
-        for (let j = i - leftBars; j <= i + rightBars; j++) {
-            if (j !== i && src[j] <= v) { isPivot = false; break; }
+
+        let pivot = true;
+
+        for (
+            let j =
+                center - leftBars;
+            j <=
+                center + rightBars;
+            j++
+        ) {
+            if (
+                j === center
+            ) {
+                continue;
+            }
+
+            if (
+                Number.isNaN(src[j]) ||
+                src[j] >= value
+            ) {
+                pivot = false;
+                break;
+            }
         }
-        if (isPivot) result[i] = v;
-    }
-    return result;
-}
 
-// ── Highest / Lowest ─────────────────────────────────────────────
-export function highest(src: number[], period: number): number[] {
-    return src.map((_, i) => {
-        if (i < period - 1) return NaN;
-        return Math.max(...src.slice(i - period + 1, i + 1).filter(v => !isNaN(v)));
-    });
-}
-export function lowest(src: number[], period: number): number[] {
-    return src.map((_, i) => {
-        if (i < period - 1) return NaN;
-        return Math.min(...src.slice(i - period + 1, i + 1).filter(v => !isNaN(v)));
-    });
-}
-
-// ── Crossover / Crossunder ───────────────────────────────────────
-export function crossover(a: number[], b: number[], i: number): boolean {
-    if (i < 1) return false;
-    const bVal = typeof b === 'number' ? b : (b as number[])[i];
-    const bPrev = typeof b === 'number' ? b : (b as number[])[i - 1];
-    return a[i - 1] <= bPrev && a[i] > bVal;
-}
-export function crossunder(a: number[], b: number[], i: number): boolean {
-    if (i < 1) return false;
-    const bVal = typeof b === 'number' ? b : (b as number[])[i];
-    const bPrev = typeof b === 'number' ? b : (b as number[])[i - 1];
-    return a[i - 1] >= bPrev && a[i] < bVal;
-}
-
-// ── Change / Momentum ─────────────────────────────────────────────
-export function change(src: number[], length = 1): number[] {
-    return src.map((v, i) => i < length ? NaN : v - src[i - length]);
-}
-export function mom(src: number[], length: number): number[] { return change(src, length); }
-
-// ── Standard Deviation ────────────────────────────────────────────
-export function stdev(src: number[], period: number): number[] {
-    const m = sma(src, period);
-    return m.map((mean, i) => {
-        if (isNaN(mean)) return NaN;
-        const slice = src.slice(i - period + 1, i + 1);
-        return Math.sqrt(slice.reduce((acc, v) => acc + (v - mean) ** 2, 0) / period);
-    });
-}
-
-// ── Variance ─────────────────────────────────────────────────────
-export function variance(src: number[], period: number): number[] {
-    return stdev(src, period).map(v => v ** 2);
-}
-
-// ── Correlation ──────────────────────────────────────────────────
-export function correlation(x: number[], y: number[], period: number): number[] {
-    const result: number[] = new Array(x.length).fill(NaN);
-    for (let i = period - 1; i < x.length; i++) {
-        const sx = x.slice(i - period + 1, i + 1);
-        const sy = y.slice(i - period + 1, i + 1);
-        const mx = sx.reduce((a, v) => a + v, 0) / period;
-        const my = sy.reduce((a, v) => a + v, 0) / period;
-        let num = 0, dx = 0, dy = 0;
-        for (let j = 0; j < period; j++) {
-            num += (sx[j] - mx) * (sy[j] - my);
-            dx  += (sx[j] - mx) ** 2;
-            dy  += (sy[j] - my) ** 2;
+        if (pivot) {
+            result[center] =
+                value;
         }
-        result[i] = (dx === 0 || dy === 0) ? 0 : num / Math.sqrt(dx * dy);
     }
+
     return result;
 }
 
-// ── Linreg (linear regression value) ────────────────────────────
-export function linreg(src: number[], period: number, offset = 0): number[] {
-    const result: number[] = new Array(src.length).fill(NaN);
-    for (let i = period - 1; i < src.length; i++) {
-        const slice = src.slice(i - period + 1, i + 1);
-        let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-        for (let j = 0; j < period; j++) {
-            sumX  += j; sumY += slice[j];
-            sumXY += j * slice[j]; sumX2 += j * j;
+// ================================================================
+// Pivot Low
+// ================================================================
+
+export function pivotlow(
+    src: readonly number[],
+    leftBars: number,
+    rightBars: number
+): number[] {
+    const n =
+        src.length;
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    if (
+        leftBars < 0 ||
+        rightBars < 0
+    ) {
+        return result;
+    }
+
+    for (
+        let center = leftBars;
+        center <
+            n - rightBars;
+        center++
+    ) {
+        const value =
+            src[center];
+
+        if (Number.isNaN(value)) {
+            continue;
         }
-        const denom = period * sumX2 - sumX * sumX;
-        if (denom === 0) { result[i] = slice[period - 1]; continue; }
-        const m = (period * sumXY - sumX * sumY) / denom;
-        const b = (sumY - m * sumX) / period;
-        result[i] = m * (period - 1 - offset) + b;
+
+        let pivot = true;
+
+        for (
+            let j =
+                center - leftBars;
+            j <=
+                center + rightBars;
+            j++
+        ) {
+            if (
+                j === center
+            ) {
+                continue;
+            }
+
+            if (
+                Number.isNaN(src[j]) ||
+                src[j] <= value
+            ) {
+                pivot = false;
+                break;
+            }
+        }
+
+        if (pivot) {
+            result[center] =
+                value;
+        }
     }
+
     return result;
 }
 
-// ── Sum ───────────────────────────────────────────────────────────
-export function sum(src: number[], period: number): number[] {
-    const result: number[] = new Array(src.length).fill(NaN);
-    for (let i = period - 1; i < src.length; i++) {
-        result[i] = src.slice(i - period + 1, i + 1).reduce((a, v) => a + v, 0);
+// ================================================================
+// Linear Regression
+// ================================================================
+
+export function linreg(
+    src: readonly number[],
+    period: number,
+    offset = 0
+): number[] {
+    const n =
+        src.length;
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    if (
+        !validPeriod(period)
+    ) {
+        return result;
     }
+
+    const sumX =
+        period *
+        (period - 1) /
+        2;
+
+    const sumX2 =
+        period *
+        (period - 1) *
+        (2 * period - 1) /
+        6;
+
+    const denominator =
+        period * sumX2 -
+        sumX * sumX;
+
+    for (
+        let i = period - 1;
+        i < n;
+        i++
+    ) {
+        let sumY = 0;
+        let sumXY = 0;
+
+        let valid = true;
+
+        for (
+            let j = 0;
+            j < period;
+            j++
+        ) {
+            const value =
+                src[
+                    i -
+                    period +
+                    1 +
+                    j
+                ];
+
+            if (Number.isNaN(value)) {
+                valid = false;
+                break;
+            }
+
+            sumY += value;
+            sumXY += j * value;
+        }
+
+        if (!valid) {
+            continue;
+        }
+
+        const slope =
+            (
+                period *
+                    sumXY -
+                sumX *
+                    sumY
+            ) /
+            denominator;
+
+        const intercept =
+            (
+                sumY -
+                slope * sumX
+            ) / period;
+
+        result[i] =
+            slope *
+                (
+                    period -
+                    1 -
+                    offset
+                ) +
+            intercept;
+    }
+
     return result;
 }
 
-// ── Rising / Falling ─────────────────────────────────────────────
-export function rising(src: number[], period: number): boolean[] {
-    return src.map((v, i) => i >= period && v > src[i - period]);
-}
-export function falling(src: number[], period: number): boolean[] {
-    return src.map((v, i) => i >= period && v < src[i - period]);
+// ================================================================
+// Correlation
+// ================================================================
+
+export function correlation(
+    x: readonly number[],
+    y: readonly number[],
+    period: number
+): number[] {
+    const n =
+        Math.min(
+            x.length,
+            y.length
+        );
+
+    const result =
+        new Array<number>(n).fill(NaN);
+
+    if (
+        !validPeriod(period)
+    ) {
+        return result;
+    }
+
+    for (
+        let i = period - 1;
+        i < n;
+        i++
+    ) {
+        let sumX = 0;
+        let sumY = 0;
+
+        let valid = true;
+
+        for (
+            let j = i - period + 1;
+            j <= i;
+            j++
+        ) {
+            if (
+                Number.isNaN(x[j]) ||
+                Number.isNaN(y[j])
+            ) {
+                valid = false;
+                break;
+            }
+
+            sumX += x[j];
+            sumY += y[j];
+        }
+
+        if (!valid) {
+            continue;
+        }
+
+        const meanX =
+            sumX / period;
+
+        const meanY =
+            sumY / period;
+
+        let numerator = 0;
+        let varianceX = 0;
+        let varianceY = 0;
+
+        for (
+            let j = i - period + 1;
+            j <= i;
+            j++
+        ) {
+            const dx =
+                x[j] - meanX;
+
+            const dy =
+                y[j] - meanY;
+
+            numerator +=
+                dx * dy;
+
+            varianceX +=
+                dx * dx;
+
+            varianceY +=
+                dy * dy;
+        }
+
+        const denominator =
+            Math.sqrt(
+                varianceX *
+                varianceY
+            );
+
+        result[i] =
+            denominator === 0
+                ? 0
+                : numerator /
+                    denominator;
+    }
+
+    return result;
 }

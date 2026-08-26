@@ -14,6 +14,7 @@ export * from './IndicatorCache';
 export * from './IndicatorEngine';
 export * from './TimeframeCursor';
 export * from './MTFSeriesCache';
+export * from './PineOrderEngine';
 export * from './HistoricalDataFeed';
 export * from './MetricsEngine';
 export * from './BacktestValidator';

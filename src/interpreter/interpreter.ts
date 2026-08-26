@@ -9,6 +9,7 @@ import * as ind from './indicators';
 import { PineExecutionContext } from './PineExecutionContext';
 import { CompiledPineScript, PineScriptCompiler } from './CompiledPineScript';
 import { PineInterpreter } from './PineInterpreter';
+import { createSeriesCache } from './SeriesCache';
 
 export { PineInterpreter };
 
@@ -28,14 +29,79 @@ interface StrategyContext {
     position_size: number;
 }
 
-/**
- * Wraps an array so it can be passed to functions as an array,
- * but also automatically dereferences to its last (or indexed) value in comparisons / math.
- */
-export function wrapSeries<T extends any[]>(
+// ================================================================
+// Pine Series Runtime
+// ================================================================
+
+export interface PineSeries<T = number> {
+    readonly values: readonly T[];
+    readonly currentIndex: number;
+    readonly seriesType?: string;
+}
+
+export function createPineSeries<T = number>(
+    values: readonly T[],
+    currentIndex: number,
+    seriesType?: string
+): PineSeries<T> {
+    return {
+        values,
+        currentIndex,
+        seriesType,
+    };
+}
+
+export function isPineSeries(
+    value: unknown
+): value is PineSeries {
+    return (
+        typeof value === 'object' &&
+        value !== null &&
+        'values' in value &&
+        'currentIndex' in value
+    );
+}
+
+export function seriesCurrent<T>(
+    value: T | PineSeries<T>
+): T {
+    if (isPineSeries(value)) {
+        return (
+            (value as PineSeries<T>).values[value.currentIndex] ??
+            (NaN as unknown as T)
+        );
+    }
+
+    return value as T;
+}
+
+export function seriesAt<T>(
+    value: T | PineSeries<T>,
+    offset = 0
+): T {
+    if (!isPineSeries(value)) {
+        return offset === 0
+            ? (value as T)
+            : (NaN as unknown as T);
+    }
+
+    const index =
+        value.currentIndex - offset;
+
+    if (
+        index < 0 ||
+        index >= value.values.length
+    ) {
+        return NaN as unknown as T;
+    }
+
+    return (value as PineSeries<T>).values[index];
+}
+
+export function wrapSeries<T extends readonly any[]>(
     arr: T,
-    currentIndex?: number,
-    seriesType?: 'close' | 'open' | 'high' | 'low' | 'volume'
+    currentIndex = arr.length - 1,
+    seriesType?: string
 ): T {
     if (!Array.isArray(arr)) return arr;
     if (seriesType) {
@@ -51,52 +117,347 @@ export function wrapSeries<T extends any[]>(
     return arr;
 }
 
-/**
- * Normalizes Pine Script timeframe representations to standard format.
- * Examples: "15" -> "15m", "60" -> "1h", "240" -> "4h", "D" -> "1d"
- */
-export function normalizeTimeframe(tf: string | number): string {
-    const s = String(tf).trim().toLowerCase();
-    if (s === '1' || s === '1m') return '1m';
-    if (s === '3' || s === '3m') return '3m';
-    if (s === '5' || s === '5m') return '5m';
-    if (s === '15' || s === '15m') return '15m';
-    if (s === '30' || s === '30m') return '30m';
-    if (s === '60' || s === '1h' || s === '60m') return '1h';
-    if (s === '120' || s === '2h' || s === '120m') return '2h';
-    if (s === '240' || s === '4h' || s === '240m') return '4h';
-    if (s === 'd' || s === '1d' || s === '1440') return '1d';
-    if (s === 'w' || s === '1w') return '1w';
-    return s;
-}
+// ================================================================
+// Pine Runtime Value Helpers
+// ================================================================
 
-/**
- * Converts any timeframe string to total minutes.
- */
-export function parseTimeframeToMinutes(tf: string | number): number {
-    const s = normalizeTimeframe(tf);
-    if (s.endsWith('m')) return parseInt(s) || 5;
-    if (s.endsWith('h')) return (parseInt(s) || 1) * 60;
-    if (s.endsWith('d')) return (parseInt(s) || 1) * 1440;
-    if (s.endsWith('w')) return (parseInt(s) || 1) * 10080;
-    return parseInt(s) || 5;
-}
+export type PineRuntimeValue =
+    | number
+    | boolean
+    | string
+    | null
+    | undefined
+    | PineSeries
+    | PineRuntimeValue[]
+    | Record<string, unknown>;
 
-export type PineScriptVersion = 1 | 2 | 3 | 4 | 5 | 6;
-
-/**
- * Detects the Pine Script version from source code annotation (e.g. //@version=5).
- * Defaults to 5 if unspecified.
- */
-export function detectPineVersion(script: string): PineScriptVersion {
-    const match = script.match(/\/\/\s*@version\s*=\s*(\d+)/i);
-    if (match && match[1]) {
-        const v = parseInt(match[1], 10);
-        if (v >= 1 && v <= 6) {
-            return v as PineScriptVersion;
-        }
+export function pineValue(
+    value: unknown
+): any {
+    if (isPineSeries(value)) {
+        return seriesCurrent(value);
     }
+
+    return value;
+}
+
+export function pineHistory(
+    value: unknown,
+    offset: number
+): any {
+    if (isPineSeries(value)) {
+        return seriesAt(
+            value,
+            offset
+        );
+    }
+
+    if (offset === 0) {
+        return value;
+    }
+
+    return NaN;
+}
+
+export function pineNumber(
+    value: unknown
+): number {
+    const current = pineValue(value);
+
+    if (
+        current === null ||
+        current === undefined
+    ) {
+        return NaN;
+    }
+
+    const n = Number(current);
+
+    return Number.isFinite(n)
+        ? n
+        : NaN;
+}
+
+export function pineBool(
+    value: unknown
+): boolean {
+    const current = pineValue(value);
+
+    if (
+        current === null ||
+        current === undefined
+    ) {
+        return false;
+    }
+
+    if (
+        typeof current === 'number' &&
+        Number.isNaN(current)
+    ) {
+        return false;
+    }
+
+    return Boolean(current);
+}
+
+export function pineIsNa(
+    value: unknown
+): boolean {
+    const current = pineValue(value);
+
+    return (
+        current === null ||
+        current === undefined ||
+        (
+            typeof current === 'number' &&
+            Number.isNaN(current)
+        )
+    );
+}
+
+// ================================================================
+// Pine na / nz / fixnan
+// ================================================================
+
+export function pineNa(
+    value: unknown
+): boolean {
+    return pineIsNa(value);
+}
+
+export function pineNz(
+    value: unknown,
+    replacement: unknown = 0
+): any {
+    return pineIsNa(value)
+        ? replacement
+        : pineValue(value);
+}
+
+export function pineFixnan(
+    value: unknown,
+    replacement: unknown = 0
+): any {
+    return pineIsNa(value)
+        ? replacement
+        : pineValue(value);
+}
+
+// ================================================================
+// Pine Timeframe Utilities
+// ================================================================
+
+export function normalizeTimeframe(
+    tf: string | number
+): string {
+    const raw = String(tf)
+        .trim()
+        .toLowerCase();
+
+    if (!raw) {
+        return '5m';
+    }
+
+    // Pine minute notation
+    if (/^\d+$/.test(raw)) {
+        const minutes = Number(raw);
+
+        if (minutes < 60) {
+            return `${minutes}m`;
+        }
+
+        if (minutes % 60 === 0) {
+            const hours = minutes / 60;
+
+            if (hours < 24) {
+                return `${hours}h`;
+            }
+
+            if (hours % 24 === 0) {
+                const days = hours / 24;
+
+                return `${days}d`;
+            }
+        }
+
+        return `${minutes}m`;
+    }
+
+    // Seconds
+    if (
+        raw.endsWith('s') &&
+        /^\d+s$/.test(raw)
+    ) {
+        return raw;
+    }
+
+    // Minutes
+    if (
+        raw.endsWith('m') &&
+        /^\d+m$/.test(raw)
+    ) {
+        return raw;
+    }
+
+    // Hours
+    if (
+        raw.endsWith('h') &&
+        /^\d+h$/.test(raw)
+    ) {
+        return raw;
+    }
+
+    // Days
+    if (
+        raw === 'd' ||
+        raw === '1d'
+    ) {
+        return '1d';
+    }
+
+    if (
+        /^\d+d$/.test(raw)
+    ) {
+        return raw;
+    }
+
+    // Weeks
+    if (
+        raw === 'w' ||
+        raw === '1w'
+    ) {
+        return '1w';
+    }
+
+    if (
+        /^\d+w$/.test(raw)
+    ) {
+        return raw;
+    }
+
+    // Months
+    if (
+        raw === 'mth' ||
+        raw === 'mo' ||
+        raw === '1mo'
+    ) {
+        return '1mo';
+    }
+
+    if (
+        /^\d+mo$/.test(raw)
+    ) {
+        return raw;
+    }
+
+    return raw;
+}
+
+export function parseTimeframeToMinutes(
+    tf: string | number
+): number {
+    const normalized =
+        normalizeTimeframe(tf);
+
+    if (
+        normalized.endsWith('s')
+    ) {
+        return Number.parseInt(
+            normalized,
+            10
+        ) / 60;
+    }
+
+    if (
+        normalized.endsWith('m')
+    ) {
+        return Number.parseInt(
+            normalized,
+            10
+        );
+    }
+
+    if (
+        normalized.endsWith('h')
+    ) {
+        return (
+            Number.parseInt(
+                normalized,
+                10
+            ) * 60
+        );
+    }
+
+    if (
+        normalized.endsWith('d')
+    ) {
+        return (
+            Number.parseInt(
+                normalized,
+                10
+            ) * 1440
+        );
+    }
+
+    if (
+        normalized.endsWith('w')
+    ) {
+        return (
+            Number.parseInt(
+                normalized,
+                10
+            ) * 10080
+        );
+    }
+
+    if (
+        normalized.endsWith('mo')
+    ) {
+        return (
+            Number.parseInt(
+                normalized,
+                10
+            ) * 43200
+        );
+    }
+
     return 5;
+}
+
+export type PineScriptVersion = 5 | 6;
+
+export function detectPineVersion(
+    script: string
+): PineScriptVersion {
+    const match = script.match(
+        /^\s*\/\/\s*@version\s*=\s*(\d+)/mi
+    );
+
+    if (!match) {
+        /*
+         * For BreakoutEx we treat an unspecified script
+         * as v5-compatible legacy Pine.
+         */
+        return 5;
+    }
+
+    const version =
+        Number.parseInt(
+            match[1],
+            10
+        );
+
+    if (
+        version !== 5 &&
+        version !== 6
+    ) {
+        throw new Error(
+            `Unsupported Pine Script version: ${version}. ` +
+            `BreakoutEx currently targets Pine v5 and v6.`
+        );
+    }
+
+    return version as PineScriptVersion;
 }
 
 export interface DataSufficiencyRequirement {
@@ -245,6 +606,119 @@ export interface PineEvaluationOptions {
      * Default: true.
      */
     useCompiledScript?: boolean;
+
+    /**
+     * Dynamic script input overrides.
+     */
+    inputOverrides?: Record<string, unknown>;
+}
+
+function createBarState(
+    currentIndex: number,
+    totalBars: number,
+    isRealtime = false
+) {
+    return {
+        isfirst: currentIndex === 0,
+        islast: currentIndex === totalBars - 1,
+        ishistory: !isRealtime,
+        isrealtime: isRealtime,
+        isnew: true,
+        isconfirmed: !isRealtime,
+        islastconfirmedhistory: !isRealtime && currentIndex === totalBars - 1,
+        index: currentIndex,
+    };
+}
+
+function createInputNamespace(
+    overrides: Record<string, unknown> = {}
+) {
+    const resolve = (
+        name: string | undefined,
+        defval: unknown
+    ) => {
+        if (
+            name &&
+            Object.prototype.hasOwnProperty.call(
+                overrides,
+                name
+            )
+        ) {
+            return overrides[name];
+        }
+        return defval;
+    };
+
+    return {
+        int(
+            defval: number,
+            _title?: string,
+            options: any = {}
+        ) {
+            return resolve(
+                options?.name,
+                defval
+            );
+        },
+
+        float(
+            defval: number,
+            _title?: string,
+            options: any = {}
+        ) {
+            return resolve(
+                options?.name,
+                defval
+            );
+        },
+
+        bool(
+            defval: boolean,
+            _title?: string,
+            options: any = {}
+        ) {
+            return resolve(
+                options?.name,
+                defval
+            );
+        },
+
+        string(
+            defval: string,
+            _title?: string,
+            options: any = {}
+        ) {
+            return resolve(
+                options?.name,
+                defval
+            );
+        },
+
+        source(
+            defval: any,
+            _title?: string,
+            options: any = {}
+        ) {
+            return resolve(
+                options?.name,
+                defval
+            );
+        },
+
+        timeframe(
+            defval: string,
+            _title?: string,
+            options: any = {}
+        ) {
+            return resolve(
+                options?.name,
+                defval
+            );
+        },
+
+        color: (_def: any) => '#000000',
+        price: (def: number) => def,
+    };
 }
 
 /**
@@ -291,18 +765,84 @@ export function evaluatePineScript(
     const n      = candles.length;
 
     // ── strategy namespace ────────────────────────────────────────
+    const strategyState = execCtx?.strategy;
+
     const strategy = {
         long:  'long'  as const,
         short: 'short' as const,
-        entry(id: string, dir: 'long' | 'short', ...rest: any[]) {
-            let comment = id;
-            if (typeof rest[0] === 'string') {
-                comment = rest[0];
-            } else if (typeof rest[0] === 'object' && rest[0]?.comment) {
-                comment = rest[0].comment;
+
+        get position_size() {
+            return (
+                strategyState?.positionSize ??
+                ctx.position_size
+            );
+        },
+
+        get position_avg_price() {
+            return (
+                strategyState?.averagePrice ??
+                0
+            );
+        },
+
+        get opentrades() {
+            return (
+                strategyState?.opentrades ??
+                ctx.opentrades
+            );
+        },
+
+        get closedtrades() {
+            return (
+                strategyState?.closedtrades ??
+                ctx.closedtrades
+            );
+        },
+
+        get netprofit() {
+            return (
+                strategyState?.netProfit ??
+                0
+            );
+        },
+
+        get equity() {
+            return (
+                strategyState?.equity ??
+                strategyState?.initialCapital ??
+                0
+            );
+        },
+
+        entry(id: string, dir: 'long' | 'short' | boolean | number, ...rest: any[]) {
+            const side: 'long' | 'short' =
+                dir === 'short' || dir === false ? 'short' : 'long';
+
+            let qty: number | undefined;
+            let limit: number | undefined;
+            let stop: number | undefined;
+            let comment: string = id;
+
+            const first = rest[0];
+            if (typeof first === 'object' && first !== null) {
+                if (first.qty !== undefined) qty = first.qty;
+                if (first.limit !== undefined) limit = first.limit;
+                if (first.stop !== undefined) stop = first.stop;
+                if (first.comment !== undefined) comment = first.comment;
+            } else {
+                if (typeof rest[0] === 'number') qty = rest[0];
+                if (typeof rest[1] === 'number') limit = rest[1];
+                if (typeof rest[2] === 'number') stop = rest[2];
+                if (typeof rest[3] === 'string') comment = rest[3];
+                else if (typeof rest[0] === 'string') comment = rest[0];
             }
+
+            if ((execCtx as any)?.orderEngine) {
+                (execCtx as any).orderEngine.entry(id, side, qty, limit, stop, comment);
+            }
+
             ctx.signal =
-                dir === 'long'
+                side === 'long'
                     ? {
                         action: 'buy',
                         comment,
@@ -315,9 +855,27 @@ export function evaluatePineScript(
                         source: 'pine',
                         explicitScore: false,
                     };
-            ctx.position = dir;
+            ctx.position = side;
         },
-        close(id?: string, comment?: string) {
+        close(id?: string, ...rest: any[]) {
+            let comment = id;
+            let qty: number | undefined;
+            let qty_percent: number | undefined;
+
+            const first = rest[0];
+            if (typeof first === 'object' && first !== null) {
+                if (first.qty !== undefined) qty = first.qty;
+                if (first.qty_percent !== undefined) qty_percent = first.qty_percent;
+                if (first.comment !== undefined) comment = first.comment;
+            } else {
+                if (typeof rest[0] === 'number') qty = rest[0];
+                if (typeof rest[1] === 'string') comment = rest[1];
+                else if (typeof rest[0] === 'string') comment = rest[0];
+            }
+
+            if ((execCtx as any)?.orderEngine && id) {
+                (execCtx as any).orderEngine.close(id, qty, comment, qty_percent);
+            }
             ctx.signal = {
                 action: 'close',
                 comment: comment ?? id,
@@ -325,33 +883,101 @@ export function evaluatePineScript(
             };
         },
         close_all(comment?: string) {
+            if ((execCtx as any)?.orderEngine) {
+                (execCtx as any).orderEngine.closeAll(comment);
+            }
             ctx.signal = {
                 action: 'close',
                 comment: comment ?? 'close_all',
                 source: 'pine',
             };
         },
-        exit(id: string, _from?: string, ...rest: any[]) {
+        exit(id: string, fromEntry?: string, ...rest: any[]) {
             const first = rest[0];
+            let profit: number | undefined;
+            let limit: number | undefined;
+            let loss: number | undefined;
+            let stop: number | undefined;
+            let qty: number | undefined;
+            let qty_percent: number | undefined;
+            let trail_price: number | undefined;
+            let trail_points: number | undefined;
+            let trail_offset: number | undefined;
+            let comment: string | undefined;
+
             if (typeof first === 'object' && first !== null) {
-                if (first.profit !== undefined) ctx.signal.tp = first.profit;
-                if (first.limit  !== undefined) ctx.signal.tp = first.limit;
-                if (first.loss   !== undefined) ctx.signal.sl = first.loss;
-                if (first.stop   !== undefined) ctx.signal.sl = first.stop;
-                if (first.comment) ctx.signal.comment = first.comment;
+                if (first.profit !== undefined) { profit = first.profit; ctx.signal.tp = first.profit; }
+                if (first.limit  !== undefined) { limit = first.limit; ctx.signal.tp = first.limit; }
+                if (first.loss   !== undefined) { loss = first.loss; ctx.signal.sl = first.loss; }
+                if (first.stop   !== undefined) { stop = first.stop; ctx.signal.sl = first.stop; }
+                if (first.qty    !== undefined) qty = first.qty;
+                if (first.qty_percent !== undefined) qty_percent = first.qty_percent;
+                if (first.trail_price !== undefined) trail_price = first.trail_price;
+                if (first.trail_points !== undefined) trail_points = first.trail_points;
+                if (first.trail_offset !== undefined) trail_offset = first.trail_offset;
+                if (first.comment) { comment = first.comment; ctx.signal.comment = first.comment; }
             } else {
-                if (typeof rest[0] === 'number') ctx.signal.tp = rest[0];
-                if (typeof rest[1] === 'number') ctx.signal.sl = rest[1];
-                if (typeof rest[2] === 'string') ctx.signal.comment = rest[2];
+                if (typeof rest[0] === 'number') { profit = rest[0]; ctx.signal.tp = rest[0]; }
+                if (typeof rest[1] === 'number') { loss = rest[1]; ctx.signal.sl = rest[1]; }
+                if (typeof rest[2] === 'string') { comment = rest[2]; ctx.signal.comment = rest[2]; }
             }
+
+            if ((execCtx as any)?.orderEngine) {
+                (execCtx as any).orderEngine.exit(
+                    id, fromEntry, qty, profit, limit, loss, stop,
+                    trail_price, trail_points, trail_offset, comment, qty_percent
+                );
+            }
+
             ctx.signal.source = 'pine';
         },
-        cancel(_id: string) {},
-        order(_id: string, _dir: any, _qty?: number, _opts?: any) {},
-        get opentrades()   { return ctx.opentrades; },
-        get closedtrades() { return ctx.closedtrades; },
-        get position_size(){ return ctx.position_size; },
+        cancel(id?: string) {
+            if ((execCtx as any)?.orderEngine && id) {
+                (execCtx as any).orderEngine.cancel(id);
+            }
+        },
+        cancel_all() {
+            if ((execCtx as any)?.orderEngine) {
+                (execCtx as any).orderEngine.cancelAll();
+            }
+        },
+        order(id: string, dir: any, ...rest: any[]) {
+            const side: 'long' | 'short' =
+                dir === 'short' || dir === false ? 'short' : 'long';
+            let qty: number | undefined;
+            let limit: number | undefined;
+            let stop: number | undefined;
+            let oca_name: string | undefined;
+            let oca_type: 'cancel' | 'reduce' | 'none' | undefined;
+            let comment: string | undefined;
+
+            const first = rest[0];
+            if (typeof first === 'object' && first !== null) {
+                if (first.qty !== undefined) qty = first.qty;
+                if (first.limit !== undefined) limit = first.limit;
+                if (first.stop !== undefined) stop = first.stop;
+                if (first.oca_name !== undefined) oca_name = first.oca_name;
+                if (first.oca_type !== undefined) oca_type = first.oca_type;
+                if (first.comment !== undefined) comment = first.comment;
+            } else {
+                if (typeof rest[0] === 'number') qty = rest[0];
+                if (typeof rest[1] === 'number') limit = rest[1];
+                if (typeof rest[2] === 'number') stop = rest[2];
+                if (typeof rest[3] === 'string') oca_name = rest[3];
+                if (typeof rest[4] === 'string') oca_type = rest[4] as any;
+                if (typeof rest[5] === 'string') comment = rest[5];
+            }
+
+            if ((execCtx as any)?.orderEngine) {
+                (execCtx as any).orderEngine.order(id, side, qty, limit, stop, oca_name, oca_type, comment);
+            }
+        },
         direction: { long: 'long', short: 'short', all: 'all' },
+        oca: {
+            cancel: 'cancel' as const,
+            reduce: 'reduce' as const,
+            none: 'none' as const,
+        },
     };
 
     function getSeriesType(src: number[]): 'close' | 'open' | 'high' | 'low' | undefined {
@@ -568,9 +1194,23 @@ export function evaluatePineScript(
 
     const ta = buildTaNamespace(candles, execCtx?.indicators, true);
 
+    // ── barmerge namespace ───────────────────────────────────────
+    const barmerge = {
+        gaps_off: 'gaps_off' as const,
+        gaps_on: 'gaps_on' as const,
+        lookahead_off: 'off' as const,
+        lookahead_on: 'on' as const,
+    };
+
     // ── request namespace (Multi-Timeframe MTF support with strict lookahead guard) ───────────
     const request = {
-        security(_sym: string, tf: string | number, exprFn: any) {
+        security(
+            _sym: string,
+            tf: string | number,
+            exprFn: any,
+            gapsOpt: 'gaps_off' | 'gaps_on' | 'off' | 'on' = 'gaps_off',
+            lookaheadOpt: 'off' | 'on' = 'off'
+        ) {
             const normTf = normalizeTimeframe(tf);
             const mtfContext = execCtx?.mtfCache?.get(normTf);
             const cursor = mtfContext?.cursor ?? execCtx?.cursors?.get(normTf);
@@ -578,18 +1218,33 @@ export function evaluatePineScript(
             const htfEngine = mtfContext?.indicators ?? execCtx?.timeframeIndicators?.get(normTf);
             const currentTs = execCtx ? execCtx.currentTimestamp : (candles[candles.length - 1]?.timestamp ?? Date.now());
 
-            let htfLast: number;
-            let effectiveCandles: Candle[];
+            const lookahead = (lookaheadOpt === 'on' || (gapsOpt as any) === 'on') ? 'on' : 'off';
+            const gaps = (gapsOpt === 'gaps_on' || (lookaheadOpt as any) === 'gaps_on') ? 'gaps_on' : 'gaps_off';
 
-            if (cursor && htfSeries) {
+            let htfLast = -1;
+            let effectiveCandles: readonly Candle[] = [];
+
+            if (execCtx?.mtfCache) {
+                const mappedIdx = execCtx.mtfCache.getMappedHTFIndex(normTf, targetIndex, {
+                    lookahead,
+                    gaps,
+                });
+                htfLast = mappedIdx;
+                if (mtfContext && mtfContext.candles) {
+                    effectiveCandles = mtfContext.candles;
+                }
+            } else if (cursor && htfSeries) {
                 htfLast = cursor.advanceTo(currentTs);
                 if (htfLast < 0) htfLast = 0;
-                effectiveCandles = [];
             } else {
                 const rawHtfCandles = candleMap.get(normTf) || candles;
                 const htfCandles = rawHtfCandles.filter(c => c.timestamp <= currentTs);
                 effectiveCandles = htfCandles.length > 0 ? htfCandles : rawHtfCandles.slice(0, 1);
                 htfLast = effectiveCandles.length - 1;
+            }
+
+            if (htfLast < 0) {
+                return NaN;
             }
 
             const htfOpen   = htfSeries ? wrapSeries(htfSeries.open, htfLast, 'open') : wrapSeries(effectiveCandles.map(c => c.open), htfLast, 'open');
@@ -600,7 +1255,7 @@ export function evaluatePineScript(
             const htfHL2    = htfSeries ? wrapSeries(htfSeries.hl2, htfLast) : wrapSeries(effectiveCandles.map(c => (c.high + c.low) / 2), htfLast);
             const htfHLC3   = htfSeries ? wrapSeries(htfSeries.hlc3, htfLast) : wrapSeries(effectiveCandles.map(c => (c.high + c.low + c.close) / 3), htfLast);
             const htfOHLC4  = htfSeries ? wrapSeries(htfSeries.ohlc4, htfLast) : wrapSeries(effectiveCandles.map(c => (c.open + c.high + c.low + c.close) / 4), htfLast);
-            const htfTa     = buildTaNamespace(effectiveCandles, htfEngine, false, htfLast);
+            const htfTa     = buildTaNamespace(effectiveCandles as Candle[], htfEngine, false, htfLast);
 
             if (typeof exprFn === 'function') {
                 const res = exprFn(
@@ -619,20 +1274,65 @@ export function evaluatePineScript(
 
             return exprFn;
         },
+
+        security_lower_tf(
+            _sym: string,
+            tf: string | number,
+            exprFn: any
+        ) {
+            const normTf = normalizeTimeframe(tf);
+            const rawLtfCandles = candleMap.get(normTf) || [];
+            const currentCandle = candles[targetIndex] || candles[candles.length - 1];
+            const currentTs = currentCandle ? currentCandle.timestamp : (candles[candles.length - 1]?.timestamp ?? Date.now());
+            const baseMinutes = parseTimeframeToMinutes(baseTimeframe);
+            const baseInterval = baseMinutes * 60_000;
+            const barStart = currentCandle ? Math.floor(currentCandle.timestamp / baseInterval) * baseInterval : currentTs;
+            const barEnd = barStart + baseInterval;
+
+            // Find all lower-timeframe intrabars belonging to the current base bar
+            const intrabars = rawLtfCandles.filter(c => c.timestamp >= barStart && c.timestamp < barEnd);
+
+            if (intrabars.length === 0) {
+                return [];
+            }
+
+            const ltfSeries = createSeriesCache(intrabars);
+
+            const results: any[] = [];
+            for (let i = 0; i < intrabars.length; i++) {
+                const ltfOpen   = wrapSeries(ltfSeries.open, i, 'open');
+                const ltfHigh   = wrapSeries(ltfSeries.high, i, 'high');
+                const ltfLow    = wrapSeries(ltfSeries.low, i, 'low');
+                const ltfClose  = wrapSeries(ltfSeries.close, i, 'close');
+                const ltfVolume = wrapSeries(ltfSeries.volume, i, 'volume');
+                const ltfHL2    = wrapSeries(ltfSeries.hl2, i);
+                const ltfHLC3   = wrapSeries(ltfSeries.hlc3, i);
+                const ltfOHLC4  = wrapSeries(ltfSeries.ohlc4, i);
+                const ltfTa     = buildTaNamespace(intrabars, undefined, false, i);
+
+                if (typeof exprFn === 'function') {
+                    const res = exprFn(
+                        ltfClose, ltfHigh, ltfLow, ltfOpen, ltfVolume,
+                        ltfHL2, ltfHLC3, ltfOHLC4,
+                        ltfTa, math, i
+                    );
+                    const val = Array.isArray(res) ? res[i] : res;
+                    results.push(val);
+                } else {
+                    results.push(exprFn);
+                }
+            }
+
+            return results;
+        },
     };
 
 
     // ── input.* namespace ─────────────────────────────────────────
-    const input = {
-        int:    (def: number)  => def,
-        float:  (def: number)  => def,
-        bool:   (def: boolean) => def,
-        string: (def: string)  => def,
-        source: (def: number[]) => def,
-        color:  (_def: any)    => '#000000',
-        price:  (def: number)  => def,
-        timeframe: (def: string) => def,
-    };
+    const input = createInputNamespace(options.inputOverrides);
+
+    // ── barstate namespace ────────────────────────────────────────
+    const barstate = createBarState(targetIndex, candles.length, false);
 
     // ── color namespace ───────────────────────────────────────────
     const color = {
@@ -662,9 +1362,9 @@ export function evaluatePineScript(
     };
 
     // ── nz / na helpers ──────────────────────────────────────────
-    const nz  = (v: any, rep: any = 0) => (v == null || (typeof v === 'number' && isNaN(v))) ? rep : v;
-    const na  = (v: any) => v == null || (typeof v === 'number' && isNaN(v));
-    const fixnan = (v: number, rep = 0) => isNaN(v) ? rep : v;
+    const nz  = pineNz;
+    const na  = pineNa;
+    const fixnan = pineFixnan;
 
     // ── math helpers ─────────────────────────────────────────────
     const math = {
@@ -700,28 +1400,31 @@ export function evaluatePineScript(
 
         if (compiled) {
             compiled.execute(
-                strategy, ta, request, input, color, math, syminfo, timeframe,
+                strategy, ta, request, barmerge, input, color, math, syminfo, timeframe,
                 nz, na, fixnan,
                 open, high, low, close, volume,
                 hl2, hlc3, ohlc4,
-                last, last
+                last, last,
+                execCtx
             );
         } else {
             const cleaned = transformPineToJs(script, last);
             const fn = new Function(
-                'strategy','ta','request','input','color','math','syminfo','timeframe',
+                'strategy','ta','request','barmerge','input','color','math','syminfo','timeframe',
                 'nz','na','fixnan',
                 'open','high','low','close','volume',
                 'hl2','hlc3','ohlc4',
                 'bar_index','last',
+                'context',
                 cleaned
             );
             fn(
-                strategy,ta,request,input,color,math,syminfo,timeframe,
+                strategy,ta,request,barmerge,input,color,math,syminfo,timeframe,
                 nz,na,fixnan,
                 open,high,low,close,volume,
                 hl2,hlc3,ohlc4,
-                last,last
+                last,last,
+                execCtx
             );
         }
     } catch (err: any) {
@@ -970,20 +1673,25 @@ function removeMultiLineCalls(src: string, fnNames: string[]): string {
 function transformSecurityCalls(src: string): string {
     let result = '';
     let idx = 0;
-    const target = 'request.security';
 
     while (idx < src.length) {
-        const secIdx = src.indexOf(target, idx);
-        if (secIdx === -1) {
+        const secLowerIdx = src.indexOf('request.security_lower_tf', idx);
+        const secIdx = src.indexOf('request.security', idx);
+
+        if (secLowerIdx === -1 && secIdx === -1) {
             result += src.slice(idx);
             break;
         }
 
-        result += src.slice(idx, secIdx);
-        const openParen = src.indexOf('(', secIdx);
+        const isLowerTf = secLowerIdx !== -1 && (secIdx === -1 || secLowerIdx <= secIdx);
+        const target = isLowerTf ? 'request.security_lower_tf' : 'request.security';
+        const matchIdx = isLowerTf ? secLowerIdx : secIdx;
+
+        result += src.slice(idx, matchIdx);
+        const openParen = src.indexOf('(', matchIdx);
         if (openParen === -1) {
             result += target;
-            idx = secIdx + target.length;
+            idx = matchIdx + target.length;
             continue;
         }
 
@@ -1004,7 +1712,7 @@ function transformSecurityCalls(src: string): string {
         }
 
         if (depth !== 0) {
-            result += src.slice(secIdx, openParen + 1);
+            result += src.slice(matchIdx, openParen + 1);
             idx = openParen + 1;
             continue;
         }
@@ -1040,14 +1748,20 @@ function transformSecurityCalls(src: string): string {
         if (cur.trim()) args.push(cur.trim());
 
         const sym = args[0] || 'syminfo.tickerid';
-        const tf = args[1] || '"5m"';
+        const tf = args[1] || '"1m"';
         let expr = args[2] || 'close';
+        const gapsArg = args[3] ? `, ${args[3]}` : '';
+        const lookaheadArg = args[4] ? `, ${args[4]}` : '';
 
         if (expr.startsWith('lookahead') || expr.startsWith('gaps')) {
             expr = 'close';
         }
 
-        result += `request.security(${sym}, ${tf}, (close, high, low, open, volume, hl2, hlc3, ohlc4, ta, math, last) => (${expr}))`;
+        if (isLowerTf) {
+            result += `request.security_lower_tf(${sym}, ${tf}, (close, high, low, open, volume, hl2, hlc3, ohlc4, ta, math, last) => (${expr}))`;
+        } else {
+            result += `request.security(${sym}, ${tf}, (close, high, low, open, volume, hl2, hlc3, ohlc4, ta, math, last) => (${expr})${gapsArg}${lookaheadArg})`;
+        }
         idx = i + 1;
     }
 

@@ -4,30 +4,103 @@
 // Calculates complete indicator series over a full candle array.
 // Results are cached by indicator name and period for O(1) bar lookups.
 //
-// Math is audited to match `src/pine/indicators.ts` with zero divergence.
+// Math is canonical to `src/interpreter/indicators.ts` with zero divergence.
+// Integrated with SeriesCache for zero-copy OHLCV/derived price series access.
 // ================================================================
 
 import { Candle } from '../config/types';
 import * as Ind from '../interpreter';
+import { SeriesCache, createSeriesCache } from '../interpreter';
 
 export class IndicatorEngine {
 
     private readonly numCache = new Map<string, number[]>();
     private readonly objCache = new Map<string, any>();
-
-    private _close?: number[];
-    private _open?: number[];
-    private _high?: number[];
-    private _low?: number[];
-    private _volume?: number[];
+    private readonly seriesCache: SeriesCache;
 
     constructor(
         private readonly candles: Candle[]
-    ) {}
+    ) {
+        this.seriesCache = createSeriesCache(candles);
+    }
+
+    // ============================================================
+    // Direct Series Cache Access
+    // ============================================================
+
+    get series(): SeriesCache {
+        return this.seriesCache;
+    }
+
+    get length(): number {
+        return this.seriesCache.length;
+    }
+
+    close(): readonly number[] {
+        return this.seriesCache.close;
+    }
+
+    open(): readonly number[] {
+        return this.seriesCache.open;
+    }
+
+    high(): readonly number[] {
+        return this.seriesCache.high;
+    }
+
+    low(): readonly number[] {
+        return this.seriesCache.low;
+    }
+
+    volume(): readonly number[] {
+        return this.seriesCache.volume;
+    }
+
+    hl2(): readonly number[] {
+        return this.seriesCache.hl2;
+    }
+
+    hlc3(): readonly number[] {
+        return this.seriesCache.hlc3;
+    }
+
+    ohlc4(): readonly number[] {
+        return this.seriesCache.ohlc4;
+    }
+
+    // ============================================================
+    // Cache Management & Diagnostics
+    // ============================================================
+
+    clearCache(): void {
+        this.numCache.clear();
+        this.objCache.clear();
+    }
+
+    has(key: string): boolean {
+        return this.numCache.has(key) || this.objCache.has(key);
+    }
+
+    size(): number {
+        return this.numCache.size + this.objCache.size;
+    }
+
+    stats(): { numCached: number; objCached: number; totalCached: number; seriesLength: number } {
+        return {
+            numCached: this.numCache.size,
+            objCached: this.objCache.size,
+            totalCached: this.size(),
+            seriesLength: this.seriesCache.length,
+        };
+    }
+
+    // ============================================================
+    // Moving Averages
+    // ============================================================
 
     ema(
         period: number,
-        source: 'close' | 'open' | 'high' | 'low' = 'close'
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'close'
     ): number[] {
         const src = this.getSourceSeries(source);
         return this.getOrCalculateNum(
@@ -38,7 +111,7 @@ export class IndicatorEngine {
 
     sma(
         period: number,
-        source: 'close' | 'open' | 'high' | 'low' = 'close'
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'close'
     ): number[] {
         const src = this.getSourceSeries(source);
         return this.getOrCalculateNum(
@@ -49,7 +122,7 @@ export class IndicatorEngine {
 
     wma(
         period: number,
-        source: 'close' | 'open' | 'high' | 'low' = 'close'
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'close'
     ): number[] {
         const src = this.getSourceSeries(source);
         return this.getOrCalculateNum(
@@ -60,7 +133,7 @@ export class IndicatorEngine {
 
     hma(
         period: number,
-        source: 'close' | 'open' | 'high' | 'low' = 'close'
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'close'
     ): number[] {
         const src = this.getSourceSeries(source);
         return this.getOrCalculateNum(
@@ -71,7 +144,7 @@ export class IndicatorEngine {
 
     dema(
         period: number,
-        source: 'close' | 'open' | 'high' | 'low' = 'close'
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'close'
     ): number[] {
         const src = this.getSourceSeries(source);
         return this.getOrCalculateNum(
@@ -82,7 +155,7 @@ export class IndicatorEngine {
 
     tema(
         period: number,
-        source: 'close' | 'open' | 'high' | 'low' = 'close'
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'close'
     ): number[] {
         const src = this.getSourceSeries(source);
         return this.getOrCalculateNum(
@@ -93,7 +166,7 @@ export class IndicatorEngine {
 
     rma(
         period: number,
-        source: 'close' | 'open' | 'high' | 'low' = 'close'
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'close'
     ): number[] {
         const src = this.getSourceSeries(source);
         return this.getOrCalculateNum(
@@ -102,9 +175,13 @@ export class IndicatorEngine {
         );
     }
 
+    // ============================================================
+    // Momentum & Volatility Indicators
+    // ============================================================
+
     rsi(
         period: number,
-        source: 'close' | 'open' | 'high' | 'low' = 'close'
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'close'
     ): number[] {
         const src = this.getSourceSeries(source);
         return this.getOrCalculateNum(
@@ -130,8 +207,8 @@ export class IndicatorEngine {
     bbands(
         period = 20,
         mult = 2,
-        source: 'close' | 'open' | 'high' | 'low' = 'close'
-    ): { middle: number[]; upper: number[]; lower: number[] } {
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'close'
+    ): { middle: number[]; upper: number[]; lower: number[]; width: number[]; percentB: number[] } {
         return this.getOrCalculateObj(
             `bbands:${period}:${mult}:${source}`,
             () => Ind.bbands(this.getSourceSeries(source), period, mult)
@@ -160,7 +237,7 @@ export class IndicatorEngine {
         fast = 12,
         slow = 26,
         signal = 9,
-        source: 'close' | 'open' | 'high' | 'low' = 'close'
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'close'
     ): { macdLine: number[]; signalLine: number[]; histogram: number[] } {
         return this.getOrCalculateObj(
             `macd:${fast}:${slow}:${signal}:${source}`,
@@ -190,7 +267,7 @@ export class IndicatorEngine {
         stochPeriod = 14,
         k = 3,
         d = 3,
-        source: 'close' | 'open' | 'high' | 'low' = 'close'
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'close'
     ): { k: number[]; d: number[] } {
         return this.getOrCalculateObj(
             `stochRsi:${rsiPeriod}:${stochPeriod}:${k}:${d}:${source}`,
@@ -214,7 +291,7 @@ export class IndicatorEngine {
 
     highest(
         period: number,
-        source: 'close' | 'open' | 'high' | 'low' = 'high'
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'high'
     ): number[] {
         const src = this.getSourceSeries(source);
         return this.getOrCalculateNum(
@@ -225,7 +302,7 @@ export class IndicatorEngine {
 
     lowest(
         period: number,
-        source: 'close' | 'open' | 'high' | 'low' = 'low'
+        source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4' = 'low'
     ): number[] {
         const src = this.getSourceSeries(source);
         return this.getOrCalculateNum(
@@ -241,42 +318,11 @@ export class IndicatorEngine {
         );
     }
 
-    close(): number[] {
-        if (!this._close) {
-            this._close = this.candles.map(c => c.close);
-        }
-        return this._close;
-    }
+    // ============================================================
+    // Private Helpers
+    // ============================================================
 
-    open(): number[] {
-        if (!this._open) {
-            this._open = this.candles.map(c => c.open);
-        }
-        return this._open;
-    }
-
-    high(): number[] {
-        if (!this._high) {
-            this._high = this.candles.map(c => c.high);
-        }
-        return this._high;
-    }
-
-    low(): number[] {
-        if (!this._low) {
-            this._low = this.candles.map(c => c.low);
-        }
-        return this._low;
-    }
-
-    volume(): number[] {
-        if (!this._volume) {
-            this._volume = this.candles.map(c => c.volume);
-        }
-        return this._volume;
-    }
-
-    private getSourceSeries(source: 'close' | 'open' | 'high' | 'low'): number[] {
+    private getSourceSeries(source: 'close' | 'open' | 'high' | 'low' | 'hl2' | 'hlc3' | 'ohlc4'): readonly number[] {
         switch (source) {
             case 'open':
                 return this.open();
@@ -284,6 +330,12 @@ export class IndicatorEngine {
                 return this.high();
             case 'low':
                 return this.low();
+            case 'hl2':
+                return this.hl2();
+            case 'hlc3':
+                return this.hlc3();
+            case 'ohlc4':
+                return this.ohlc4();
             case 'close':
             default:
                 return this.close();
