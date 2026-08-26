@@ -129,6 +129,8 @@ async function runParityComparison(symbol = 'ETHUSDT', limit = 1000) {
                 candleMap,
                 options: {
                     baseTimeframe: '5m',
+                    defaultTpPercent: backendDef.defaultTpPercent,
+                    defaultSlPercent: backendDef.defaultSlPercent,
                     capital: { initial: 10_000 },
                     fees: { entryPct: 0.04, exitPct: 0.04 },
                     slippage: { entryPct: 0.03, exitPct: 0.03 },
