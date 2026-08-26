@@ -7,6 +7,8 @@ export * from './Backtester';
 export * from './BacktestContext';
 export * from './PineScriptCache';
 export * from './PerformanceTimer';
+export * from './IndicatorCache';
+export * from './IndicatorEngine';
 export * from './HistoricalDataFeed';
 export * from './MetricsEngine';
 export * from './BacktestValidator';

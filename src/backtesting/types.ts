@@ -286,10 +286,11 @@ export interface BacktestOptions {
     strict?: boolean;
 
     /**
-     * Microsecond performance tracking.
+     * Microsecond performance tracking and optimization options.
      */
     performance?: {
         enabled?: boolean;
+        usePrecomputedIndicators?: boolean;
     };
 }
 

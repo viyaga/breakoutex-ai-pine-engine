@@ -6,6 +6,7 @@
 
 import { Candle, PineSignal } from '../config/types';
 import * as ind from './indicators';
+import { PineExecutionContext } from './PineExecutionContext';
 
 interface StrategyContext {
     signal:   PineSignal;
@@ -19,8 +20,14 @@ interface StrategyContext {
  * Wraps an array so it can be passed to functions as an array,
  * but also automatically dereferences to its last value in comparisons / math.
  */
-export function wrapSeries<T extends any[]>(arr: T): T {
+export function wrapSeries<T extends any[]>(
+    arr: T,
+    seriesType?: 'close' | 'open' | 'high' | 'low' | 'volume'
+): T {
     if (!Array.isArray(arr)) return arr;
+    if (seriesType) {
+        (arr as any)._seriesType = seriesType;
+    }
     (arr as any).valueOf = function() {
         return this[this.length - 1];
     };
@@ -188,10 +195,14 @@ export interface PineEvaluationOptions {
      * confluence score.
      *
      * DEFAULT = false
-     *
-     * The backtester should normally leave this false.
      */
     calculateConfluenceScore?: boolean;
+
+    /**
+     * Precomputed execution context.
+     * When supplied, indicators use precalculated series for fast O(1) execution.
+     */
+    executionContext?: PineExecutionContext;
 }
 
 /**
@@ -205,6 +216,8 @@ export function evaluatePineScript(
 ): PineSignal {
     const calculateConfluence =
         options.calculateConfluenceScore ?? false;
+
+    const execCtx = options.executionContext;
 
     const candleMap: Map<string, Candle[]> = candlesInput instanceof Map
         ? candlesInput
@@ -221,11 +234,11 @@ export function evaluatePineScript(
     };
 
     // ── Base OHLCV series ─────────────────────────────────────────
-    const open   = wrapSeries(candles.map(c => c.open));
-    const high   = wrapSeries(candles.map(c => c.high));
-    const low    = wrapSeries(candles.map(c => c.low));
-    const close  = wrapSeries(candles.map(c => c.close));
-    const volume = wrapSeries(candles.map(c => c.volume));
+    const open   = wrapSeries(candles.map(c => c.open), 'open');
+    const high   = wrapSeries(candles.map(c => c.high), 'high');
+    const low    = wrapSeries(candles.map(c => c.low), 'low');
+    const close  = wrapSeries(candles.map(c => c.close), 'close');
+    const volume = wrapSeries(candles.map(c => c.volume), 'volume');
     const hl2    = wrapSeries(candles.map(c => (c.high + c.low) / 2));
     const hlc3   = wrapSeries(candles.map(c => (c.high + c.low + c.close) / 3));
     const ohlc4  = wrapSeries(candles.map(c => (c.open + c.high + c.low + c.close) / 4));
@@ -296,24 +309,72 @@ export function evaluatePineScript(
         direction: { long: 'long', short: 'short', all: 'all' },
     };
 
+    function getSeriesType(src: number[]): 'close' | 'open' | 'high' | 'low' | undefined {
+        const t = (src as any)?._seriesType;
+        if (t === 'close' || t === 'open' || t === 'high' || t === 'low') return t;
+        return undefined;
+    }
+
     // ── Helper to build scoped TA namespace for any candle set ─────
-    function buildTaNamespace(cList: Candle[]) {
+    function buildTaNamespace(cList: Candle[], engine?: any) {
         const _cache: Record<string, any> = {};
         const cached = <T>(key: string, fn: () => T): T =>
             key in _cache ? _cache[key] : (_cache[key] = fn());
         const curLast = cList.length - 1;
+        const len = cList.length;
 
         return {
-            ema:   (src: number[], p: number) => cached(`ema_${p}_${id(src)}`,  () => wrapSeries(ind.ema(src, p))),
-            sma:   (src: number[], p: number) => cached(`sma_${p}_${id(src)}`,  () => wrapSeries(ind.sma(src, p))),
-            wma:   (src: number[], p: number) => cached(`wma_${p}_${id(src)}`,  () => wrapSeries(ind.wma(src, p))),
-            hma:   (src: number[], p: number) => cached(`hma_${p}_${id(src)}`,  () => wrapSeries(ind.hma(src, p))),
-            dema:  (src: number[], p: number) => cached(`dema_${p}_${id(src)}`, () => wrapSeries(ind.dema(src, p))),
-            tema:  (src: number[], p: number) => cached(`tema_${p}_${id(src)}`, () => wrapSeries(ind.tema(src, p))),
-            rma:   (src: number[], p: number) => cached(`rma_${p}_${id(src)}`,  () => wrapSeries(ind.rma(src, p))),
-            rsi:   (src: number[], p: number) => cached(`rsi_${p}_${id(src)}`,  () => wrapSeries(ind.rsi(src, p))),
-            atr:   (p: number)               => cached(`atr_${p}`,             () => wrapSeries(ind.atr(cList, p))),
-            cci:   (p?: number)              => cached(`cci_${p ?? 20}`,        () => wrapSeries(ind.cci(cList, p ?? 20))),
+            ema: (src: number[], p: number) => {
+                const type = getSeriesType(src);
+                if (engine && type) {
+                    return cached(`ema_${p}_${type}`, () => wrapSeries(engine.ema(p, type).slice(0, len)));
+                }
+                return cached(`ema_${p}_${id(src)}`, () => wrapSeries(ind.ema(src, p)));
+            },
+            sma: (src: number[], p: number) => {
+                const type = getSeriesType(src);
+                if (engine && type) {
+                    return cached(`sma_${p}_${type}`, () => wrapSeries(engine.sma(p, type).slice(0, len)));
+                }
+                return cached(`sma_${p}_${id(src)}`, () => wrapSeries(ind.sma(src, p)));
+            },
+            wma: (src: number[], p: number) => {
+                const type = getSeriesType(src);
+                if (engine && type) {
+                    return cached(`wma_${p}_${type}`, () => wrapSeries(engine.wma(p, type).slice(0, len)));
+                }
+                return cached(`wma_${p}_${id(src)}`, () => wrapSeries(ind.wma(src, p)));
+            },
+            hma: (src: number[], p: number) => {
+                const type = getSeriesType(src);
+                if (engine && type) {
+                    return cached(`hma_${p}_${type}`, () => wrapSeries(engine.hma(p, type).slice(0, len)));
+                }
+                return cached(`hma_${p}_${id(src)}`, () => wrapSeries(ind.hma(src, p)));
+            },
+            dema: (src: number[], p: number) => cached(`dema_${p}_${id(src)}`, () => wrapSeries(ind.dema(src, p))),
+            tema: (src: number[], p: number) => cached(`tema_${p}_${id(src)}`, () => wrapSeries(ind.tema(src, p))),
+            rma: (src: number[], p: number) => {
+                const type = getSeriesType(src);
+                if (engine && type) {
+                    return cached(`rma_${p}_${type}`, () => wrapSeries(engine.rma(p, type).slice(0, len)));
+                }
+                return cached(`rma_${p}_${id(src)}`, () => wrapSeries(ind.rma(src, p)));
+            },
+            rsi: (src: number[], p: number) => {
+                const type = getSeriesType(src);
+                if (engine && type) {
+                    return cached(`rsi_${p}_${type}`, () => wrapSeries(engine.rsi(p, type).slice(0, len)));
+                }
+                return cached(`rsi_${p}_${id(src)}`, () => wrapSeries(ind.rsi(src, p)));
+            },
+            atr: (p: number) => {
+                if (engine) {
+                    return cached(`atr_${p}`, () => wrapSeries(engine.atr(p).slice(0, len)));
+                }
+                return cached(`atr_${p}`, () => wrapSeries(ind.atr(cList, p)));
+            },
+            cci: (p?: number) => cached(`cci_${p ?? 20}`, () => wrapSeries(ind.cci(cList, p ?? 20))),
             macd: (src: number[], f = 12, s = 26, sig = 9) => {
                 const r = cached(`macd_${f}_${s}_${sig}_${id(src)}`, () => ind.macd(src, f, s, sig));
                 return [wrapSeries(r.macdLine), wrapSeries(r.signalLine), wrapSeries(r.histogram)];
@@ -322,7 +383,12 @@ export function evaluatePineScript(
                 const r = cached(`st_${factor}_${period}`, () => ind.supertrend(cList, period, factor));
                 return [wrapSeries(r.supertrend), wrapSeries(r.direction)];
             },
-            vwap: () => cached('vwap', () => wrapSeries(ind.vwap(cList))),
+            vwap: () => {
+                if (engine) {
+                    return cached('vwap', () => wrapSeries(engine.vwap().slice(0, len)));
+                }
+                return cached('vwap', () => wrapSeries(ind.vwap(cList)));
+            },
             bollinger: (src: number[], p = 20, mult = 2) => {
                 const r = cached(`bb_${p}_${mult}_${id(src)}`, () => ind.bollinger(src, p, mult));
                 return [wrapSeries(r.middle), wrapSeries(r.upper), wrapSeries(r.lower)];
@@ -385,7 +451,7 @@ export function evaluatePineScript(
         };
     }
 
-    const ta = buildTaNamespace(candles);
+    const ta = buildTaNamespace(candles, execCtx?.indicators);
 
     // ── request namespace (Multi-Timeframe MTF support with strict lookahead guard) ───────────
     const request = {
@@ -398,16 +464,17 @@ export function evaluatePineScript(
             const htfCandles = rawHtfCandles.filter(c => c.timestamp <= currentTs);
             const effectiveCandles = htfCandles.length > 0 ? htfCandles : rawHtfCandles.slice(0, 1);
 
-            const htfOpen   = wrapSeries(effectiveCandles.map(c => c.open));
-            const htfHigh   = wrapSeries(effectiveCandles.map(c => c.high));
-            const htfLow    = wrapSeries(effectiveCandles.map(c => c.low));
-            const htfClose  = wrapSeries(effectiveCandles.map(c => c.close));
-            const htfVolume = wrapSeries(effectiveCandles.map(c => c.volume));
+            const htfOpen   = wrapSeries(effectiveCandles.map(c => c.open), 'open');
+            const htfHigh   = wrapSeries(effectiveCandles.map(c => c.high), 'high');
+            const htfLow    = wrapSeries(effectiveCandles.map(c => c.low), 'low');
+            const htfClose  = wrapSeries(effectiveCandles.map(c => c.close), 'close');
+            const htfVolume = wrapSeries(effectiveCandles.map(c => c.volume), 'volume');
             const htfHL2    = wrapSeries(effectiveCandles.map(c => (c.high + c.low) / 2));
             const htfHLC3   = wrapSeries(effectiveCandles.map(c => (c.high + c.low + c.close) / 3));
             const htfOHLC4  = wrapSeries(effectiveCandles.map(c => (c.open + c.high + c.low + c.close) / 4));
             const htfLast   = effectiveCandles.length - 1;
-            const htfTa     = buildTaNamespace(effectiveCandles);
+            const htfEngine = execCtx?.timeframeIndicators?.get(normTf);
+            const htfTa     = buildTaNamespace(effectiveCandles, htfEngine);
 
             if (typeof exprFn === 'function') {
                 const res = exprFn(

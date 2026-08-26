@@ -33,6 +33,8 @@ import {
 } from './BacktestContext';
 import { PineScriptCache } from './PineScriptCache';
 import { PerformanceTimer, PerformanceTiming } from './PerformanceTimer';
+import { IndicatorEngine } from './IndicatorEngine';
+import { PineExecutionContext } from '../pine/PineExecutionContext';
 import {
     evaluatePineScript,
     normalizeTimeframe,
@@ -444,6 +446,8 @@ export class Backtester {
             performance: {
                 enabled:
                     options.performance?.enabled ?? false,
+                usePrecomputedIndicators:
+                    options.performance?.usePrecomputedIndicators ?? true,
             },
         };
     }
@@ -673,6 +677,43 @@ export class Backtester {
 
         const signalDiagnostics:
             SignalDiagnostic[] = [];
+
+        // ------------------------------------------------------------
+        // Precomputed Indicator Execution Context
+        // ------------------------------------------------------------
+
+        let executionContext: PineExecutionContext | undefined;
+
+        if (options.performance?.usePrecomputedIndicators) {
+            const baseCandles = testWindow.allCandles;
+            const testStartIndex =
+                baseCandles.length - testWindow.testCandles.length;
+            const baseIndicatorEngine = new IndicatorEngine(baseCandles);
+
+            const timeframeIndicators = new Map<string, IndicatorEngine>();
+            timeframeIndicators.set(
+                normalizeTimeframe(baseTimeframe),
+                baseIndicatorEngine
+            );
+            for (const [tf, cList] of candleMap.entries()) {
+                const norm = normalizeTimeframe(tf);
+                if (!timeframeIndicators.has(norm)) {
+                    timeframeIndicators.set(
+                        norm,
+                        new IndicatorEngine(cList)
+                    );
+                }
+            }
+
+            executionContext = {
+                currentBarIndex: testStartIndex,
+                testStartIndex,
+                currentTimestamp: testWindow.testStartTimestamp,
+                candles: baseCandles,
+                indicators: baseIndicatorEngine,
+                timeframeIndicators,
+            };
+        }
 
         // ------------------------------------------------------------
         // Historical Data Feed
@@ -1128,11 +1169,22 @@ export class Backtester {
                     // Evaluate Pine
                     // ------------------------------------------------
 
+                    if (executionContext) {
+                        executionContext.currentBarIndex =
+                            executionContext.testStartIndex + i;
+                        executionContext.currentTimestamp =
+                            currentBar.timestamp;
+                    }
+
                     const signal =
                         evaluatePineScript(
                             strategy.pineScript,
                             sliceMap,
-                            baseTimeframe
+                            baseTimeframe,
+                            {
+                                calculateConfluenceScore: false,
+                                executionContext,
+                            }
                         );
 
                     if (
