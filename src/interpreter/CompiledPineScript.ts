@@ -32,6 +32,8 @@ export type CompiledPineFunction = (
     timeframe: any,
     array: any,
     barstate: any,
+    matrix: any,
+    map: any,
     nz: any,
     na: any,
     fixnan: any,
@@ -159,6 +161,8 @@ export class PineScriptCompiler {
                 'timeframe',
                 'array',
                 'barstate',
+                'matrix',
+                'map',
 
                 'nz',
                 'na',

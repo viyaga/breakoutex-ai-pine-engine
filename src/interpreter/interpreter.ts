@@ -1431,6 +1431,43 @@ export function evaluatePineScript(
         from: (arr: any[]) => [...arr],
     };
 
+    // ── matrix namespace ─────────────────────────────────────────
+    const matrix = {
+        new: (rows = 0, cols = 0, initial_value = 0) => {
+            const m: any[][] = [];
+            for (let r = 0; r < rows; r++) {
+                m.push(Array(cols).fill(initial_value));
+            }
+            return m;
+        },
+        get: (m: any[][], row: number, col: number) => m[row]?.[col],
+        set: (m: any[][], row: number, col: number, value: any) => {
+            if (m[row]) m[row][col] = value;
+        },
+        rows: (m: any[][]) => m.length,
+        columns: (m: any[][]) => m[0]?.length ?? 0,
+        row: (m: any[][], row: number) => [...(m[row] ?? [])],
+        col: (m: any[][], col: number) => m.map(r => r[col]),
+        fill: (m: any[][], val: any) => {
+            for (let r = 0; r < m.length; r++) {
+                for (let c = 0; c < m[r].length; c++) m[r][c] = val;
+            }
+        },
+    };
+
+    // ── map namespace ───────────────────────────────────────────
+    const map = {
+        new: () => new Map<any, any>(),
+        get: (m: Map<any, any>, key: any) => m.get(key),
+        put: (m: Map<any, any>, key: any, val: any) => { m.set(key, val); },
+        has: (m: Map<any, any>, key: any) => m.has(key),
+        remove: (m: Map<any, any>, key: any) => m.delete(key),
+        clear: (m: Map<any, any>) => { m.clear(); },
+        size: (m: Map<any, any>) => m.size,
+        keys: (m: Map<any, any>) => Array.from(m.keys()),
+        values: (m: Map<any, any>) => Array.from(m.values()),
+    };
+
     // ── Cache key id helper ──────────────────────────────────────
     function id(arr: number[]): number {
         if (arr === close)  return 0;
@@ -1455,7 +1492,7 @@ export function evaluatePineScript(
         if (compiled) {
             compiled.execute(
                 strategy, ta, request, barmerge, input, color, math, syminfo, timeframe,
-                array, barstate,
+                array, barstate, matrix, map,
                 nz, na, fixnan,
                 open, high, low, close, volume,
                 hl2, hlc3, ohlc4,
@@ -1466,7 +1503,7 @@ export function evaluatePineScript(
             const cleaned = transformPineToJs(script, last);
             const fn = new Function(
                 'strategy','ta','request','barmerge','input','color','math','syminfo','timeframe',
-                'array','barstate',
+                'array','barstate','matrix','map',
                 'nz','na','fixnan',
                 'open','high','low','close','volume',
                 'hl2','hlc3','ohlc4',
@@ -1476,7 +1513,7 @@ export function evaluatePineScript(
             );
             fn(
                 strategy,ta,request,barmerge,input,color,math,syminfo,timeframe,
-                array,barstate,
+                array,barstate,matrix,map,
                 nz,na,fixnan,
                 open,high,low,close,volume,
                 hl2,hlc3,ohlc4,
@@ -1677,7 +1714,7 @@ export function transformPineToJs(script: string, _last: number): string {
     });
 
     // Strip Pine named argument labels e.g. "step = 0.1", "comment = 'x'", "stop = longStop", "limit = longTarget"
-    s = s.replace(/([(,]\s*)(?:step|step_size|comment|stop|limit|loss|profit|qty|when|overlay|precision|scale|format|title|defval|minval|maxval|options|inline|group|tooltip|lookahead|gaps)\s*=\s*/g, '$1');
+    s = s.replace(/([(,]\s*)(?:step|step_size|comment|stop|limit|loss|profit|qty|when|overlay|precision|scale|format|title|defval|minval|maxval|options|inline|group|tooltip|lookahead|gaps|oca_name|oca_type)\s*=\s*/g, '$1');
 
     // 6. var type declarations
     s = s.replace(/\bvar\s+(float|int|bool|string|color|line|label|array<\w+>)\s+/g, 'let ');
