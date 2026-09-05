@@ -698,19 +698,30 @@ BT:${compactBt}`;
 async function syncAiEvaluationToPayload(botId: string, data: any, logger?: BotCycleLogger): Promise<void> {
     const url = `${env.payloadUrl}/api/trading-bots/update-ai-strategy`;
     const payloadBody = { botId, ...data };
+    const t0 = Date.now();
     
-    const reqMsg = `[Payload API] ➔ Request: POST /api/trading-bots/update-ai-strategy | Strategy: "${data.strategyName}" (${data.strategyId}) | Regime: ${data.marketCondition}`;
+    const reqMsg = `[Payload API] ➔ Request: POST /api/trading-bots/update-ai-strategy | Strategy: "${data.strategyName}" (${data.strategyId}) | Data: ${JSON.stringify(payloadBody)}`;
     if (logger) logger.addLog(reqMsg);
     console.log(`[AI MarketEvaluator][${botId}] ${reqMsg}`);
 
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payloadBody),
-        signal: AbortSignal.timeout(10_000),
-    });
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payloadBody),
+            signal: AbortSignal.timeout(10_000),
+        });
 
-    const resMsg = `[Payload API] ⬅ Response: /api/trading-bots/update-ai-strategy | Status: ${res.status} ${res.statusText}`;
-    if (logger) logger.addLog(resMsg);
-    console.log(`[AI MarketEvaluator][${botId}] ${resMsg}`);
+        const duration = Date.now() - t0;
+        const text = await res.text();
+        let parsed: any;
+        try { parsed = JSON.parse(text); } catch { parsed = text; }
+        const resMsg = `[Payload API] ⬅ Response: POST /api/trading-bots/update-ai-strategy | Status: ${res.status} ${res.statusText} (${duration}ms) | Response: ${typeof parsed === 'string' ? parsed : JSON.stringify(parsed)}`;
+        if (logger) logger.addLog(resMsg);
+        console.log(`[AI MarketEvaluator][${botId}] ${resMsg}`);
+    } catch (err: any) {
+        const errMsg = `[Payload API] ⬅ Error: POST /api/trading-bots/update-ai-strategy | Error: ${err?.message || String(err)}`;
+        if (logger) logger.addLog(errMsg);
+        console.error(`[AI MarketEvaluator][${botId}] ${errMsg}`);
+    }
 }

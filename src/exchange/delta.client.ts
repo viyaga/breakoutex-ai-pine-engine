@@ -35,6 +35,8 @@ function parseDeltaCandles(raw: any): Candle[] {
 
 export class DeltaClient implements IExchangeClient {
     private timeOffset = 0;
+    private logger?: any;
+    private botId?: string;
 
     constructor(
         private readonly apiKey: string,
@@ -42,6 +44,10 @@ export class DeltaClient implements IExchangeClient {
         private readonly baseUrl: string = 'https://api.india.delta.exchange/v2',
     ) {}
 
+    setLogger(logger: any, botId?: string): void {
+        this.logger = logger;
+        if (botId) this.botId = botId;
+    }
 
     private sign(method: string, path: string, ts: number, body = ''): string {
         return crypto.createHmac('sha256', this.secretKey)
@@ -66,6 +72,17 @@ export class DeltaClient implements IExchangeClient {
         const qs    = params ? '?' + new URLSearchParams(params).toString() : '';
         const bodyStr = body ? JSON.stringify(body) : '';
         const url   = `${this.baseUrl}${endpoint}${qs}`;
+        const t0 = Date.now();
+
+        const botPrefix = this.botId ? `[PineEngine][${this.botId}] ` : '';
+        const reqDetail = [
+            params && Object.keys(params).length ? `Params: ${JSON.stringify(params)}` : '',
+            body && Object.keys(body).length ? `Body: ${bodyStr}` : '',
+        ].filter(Boolean).join(' | ');
+
+        const reqMsg = `${botPrefix}[Exchange API (Delta)] ➔ Request: ${method} ${endpoint}${reqDetail ? ` | ${reqDetail}` : ''}`;
+        if (this.logger?.addLog) this.logger.addLog(reqMsg);
+        console.log(reqMsg);
 
         const maxAttempts = isPublic ? 2 : 3;
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -79,10 +96,15 @@ export class DeltaClient implements IExchangeClient {
                     signal: AbortSignal.timeout(20_000),
                 };
                 const res  = await fetch(url, opts);
+                const duration = Date.now() - t0;
                 const text = await res.text();
                 const json = parseJson(text);
 
                 if (!res.ok) {
+                    const errMsg = `${botPrefix}[Exchange API (Delta)] ⬅ Error: ${method} ${endpoint} | Status: ${res.status} (${duration}ms) | Error: ${JSON.stringify(json)}`;
+                    if (this.logger?.addLog) this.logger.addLog(errMsg);
+                    console.error(errMsg);
+
                     // Handle expired signature — adjust time offset
                     if (res.status === 401 && json?.error?.code === 'expired_signature' && !isPublic && attempt < maxAttempts) {
                         const serverTime = json.error.context?.server_time;
@@ -94,6 +116,31 @@ export class DeltaClient implements IExchangeClient {
                     }
                     throw new Error(`Delta API ${res.status}: ${JSON.stringify(json)}`);
                 }
+
+                let previewStr = '';
+                if (endpoint.includes('candles') && Array.isArray(json)) {
+                    const count = json.length;
+                    if (count > 0) {
+                        const first = json[0];
+                        const last = json[count - 1];
+                        const tFirst = first?.time ? new Date(first.time * 1000).toISOString() : 'N/A';
+                        const tLast = last?.time ? new Date(last.time * 1000).toISOString() : 'N/A';
+                        previewStr = `${count} bars [${tFirst} → ${tLast}] | Latest: O=${last?.open} C=${last?.close}`;
+                    } else {
+                        previewStr = '0 bars';
+                    }
+                } else if (endpoint.includes('candles') && json?.result && Array.isArray(json.result?.candles)) {
+                    const count = json.result.candles.length;
+                    previewStr = `${count} candle bars returned`;
+                } else {
+                    previewStr = typeof json === 'string' ? json : JSON.stringify(json);
+                    if (previewStr.length > 800) previewStr = previewStr.slice(0, 800) + '...';
+                }
+
+                const resMsg = `${botPrefix}[Exchange API (Delta)] ⬅ Response: ${method} ${endpoint} | Status: ${res.status} (${duration}ms) | Data: ${previewStr}`;
+                if (this.logger?.addLog) this.logger.addLog(resMsg);
+                console.log(resMsg);
+
                 return json;
             } catch (err: any) {
                 if (attempt === maxAttempts) throw err;

@@ -30,9 +30,18 @@ async function fetchJson(url: string): Promise<any | null> {
 async function fetchDeltaProduct(symbol: string): Promise<any | null> {
     const cached = productCache.get(symbol);
     if (cached && Date.now() - cached.ts < PRODUCT_TTL) return cached.data;
-    const data = await fetchJson(`${DELTA_BASE_URL}/products/${symbol}`);
+    const t0 = Date.now();
+    const endpoint = `/products/${symbol}`;
+    console.log(`[Exchange API (Delta)] ➔ Request: GET ${endpoint} | Target: ${DELTA_BASE_URL}`);
+    const data = await fetchJson(`${DELTA_BASE_URL}${endpoint}`);
     const result = data?.result ?? null;
-    if (result) productCache.set(symbol, { data: result, ts: Date.now() });
+    const duration = Date.now() - t0;
+    if (result) {
+        productCache.set(symbol, { data: result, ts: Date.now() });
+        console.log(`[Exchange API (Delta)] ⬅ Response: GET ${endpoint} | Status: 200 (${duration}ms) | ProductID: ${result.id} | TickSize: ${result.tick_size} | ContractVal: ${result.contract_value}`);
+    } else {
+        console.warn(`[Exchange API (Delta)] ⬅ Error: GET ${endpoint} | Status: FAILED/NOT_FOUND (${duration}ms)`);
+    }
     return result;
 }
 
@@ -43,10 +52,36 @@ function mapSymbol(s: string): string {
 
 export async function fetchActivePineBots(): Promise<PineBotConfig[]> {
     // Serve from cache if fresh
-    if (configCache && Date.now() - configCache.ts < CONFIG_TTL) return configCache.data;
+    if (configCache && Date.now() - configCache.ts < CONFIG_TTL) {
+        console.log(`[Config] Active bots served from memory cache (${configCache.data.length} bots, age ${Math.round((Date.now() - configCache.ts) / 1000)}s / TTL ${CONFIG_TTL / 1000}s)`);
+        return configCache.data;
+    }
 
-    const url = `${env.payloadUrl}/api/trading-bots/active-subscribed/all?limit=200&offset=0&serverIp=${env.serverIp}`;
-    const raw: RawActiveBot[] = await fetchJson(url) ?? [];
+    const endpoint = `/api/trading-bots/active-subscribed/all?limit=200&offset=0&serverIp=${env.serverIp}`;
+    const url = `${env.payloadUrl}${endpoint}`;
+    const t0 = Date.now();
+    console.log(`[Payload API] ➔ Request: GET ${endpoint} | Target: ${env.payloadUrl} | Query: limit=200, offset=0, serverIp=${env.serverIp}`);
+
+    let raw: RawActiveBot[] = [];
+    try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+        const duration = Date.now() - t0;
+        if (res.ok) {
+            raw = await res.json() as RawActiveBot[];
+            const botsCount = Array.isArray(raw) ? raw.length : 0;
+            const botsSummary = Array.isArray(raw) && raw.length > 0
+                ? raw.map(b => `${b.id} (${b.SYMBOL}, ${b.TRADING_MODE || 'balanced'}, TF=${b.PINE_TIMEFRAME || '5m'}, Cap=$${b.CAPITAL_AMOUNT || 0})`).join('; ')
+                : 'None';
+            console.log(`[Payload API] ⬅ Response: GET ${endpoint} | Status: ${res.status} ${res.statusText} (${duration}ms) | Bots Count: ${botsCount} | Summary: [${botsSummary}]`);
+        } else {
+            const errText = await res.text().catch(() => '');
+            console.error(`[Payload API] ⬅ Error: GET ${endpoint} | Status: ${res.status} ${res.statusText} (${duration}ms) | Response: ${errText}`);
+            return [];
+        }
+    } catch (err: any) {
+        console.error(`[Payload API] ⬅ Error: GET ${endpoint} | Failed: ${err?.message || String(err)}`);
+        return [];
+    }
 
     if (!Array.isArray(raw) || !raw.length) {
         console.log('[Config] No active bots found');

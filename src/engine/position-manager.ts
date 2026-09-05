@@ -49,16 +49,20 @@ export async function handleOpenTrade(
     if (!state.entryOrderId) return { state, isStillOpen: false };
 
     // 1. Get entry order status
+    const reqOrderMsg = `[Exchange API] ➔ Request: getOrder | OrderID: ${state.entryOrderId} | Symbol: ${c.SYMBOL}`;
+    if (logger) logger.addLog(reqOrderMsg);
+    log(botId, reqOrderMsg);
+
     const entryOrder = await client.getOrder(state.entryOrderId, c.SYMBOL);
     if (!entryOrder) {
-        const msg = `[PositionManager] Could not fetch entry order ${state.entryOrderId}`;
+        const msg = `[Exchange API] ⬅ Response: getOrder ${state.entryOrderId} | Status: NOT_FOUND`;
         if (logger) logger.addLog(msg);
         log(botId, msg);
         return { state, isStillOpen: true };
     }
 
     const entryStatus = (entryOrder.state ?? entryOrder.status ?? '').toUpperCase();
-    const statusMsg = `[PositionManager] Entry order ${state.entryOrderId} status: ${entryStatus}`;
+    const statusMsg = `[Exchange API] ⬅ Response: getOrder | OrderID: ${state.entryOrderId} | Status: ${entryStatus} | FillPrice: ${entryOrder.average_fill_price ?? 'N/A'} | Data: ${JSON.stringify(entryOrder)}`;
     if (logger) logger.addLog(statusMsg);
     log(botId, statusMsg);
 
@@ -82,8 +86,15 @@ export async function handleOpenTrade(
 
     // Entry is CLOSED = filled. Now check if TP or SL was hit
     const prodIdentifier = c.PRODUCT_ID || c.SYMBOL;
+    const reqPosMsg = `[Exchange API] ➔ Request: getPosition | Product: ${prodIdentifier} | Symbol: ${c.SYMBOL}`;
+    if (logger) logger.addLog(reqPosMsg);
+    log(botId, reqPosMsg);
+
     const pos = await client.getPosition(prodIdentifier, c.SYMBOL);
     const posSize = Number(pos?.size ?? 0);
+    const resPosMsg = `[Exchange API] ⬅ Response: getPosition | Product: ${prodIdentifier} | Size: ${posSize} | EntryPrice: ${pos?.entry_price ?? 'N/A'} | Data: ${JSON.stringify(pos)}`;
+    if (logger) logger.addLog(resPosMsg);
+    log(botId, resPosMsg);
 
     if (posSize !== 0) {
         // Position is still open — trade is alive
@@ -99,8 +110,16 @@ export async function handleOpenTrade(
 
     // Check TP order if available
     if (state.takeProfitOrderId) {
+        const reqTpMsg = `[Exchange API] ➔ Request: getOrder (Take Profit) | OrderID: ${state.takeProfitOrderId} | Symbol: ${c.SYMBOL}`;
+        if (logger) logger.addLog(reqTpMsg);
+        log(botId, reqTpMsg);
+
         const tpOrder = await client.getOrder(state.takeProfitOrderId, c.SYMBOL).catch(() => null);
         const tpStatus = (tpOrder?.state ?? tpOrder?.status ?? '').toUpperCase();
+        const resTpMsg = `[Exchange API] ⬅ Response: getOrder (Take Profit) | OrderID: ${state.takeProfitOrderId} | Status: ${tpStatus} | FillPrice: ${tpOrder?.average_fill_price ?? state.tpPrice ?? 'N/A'}`;
+        if (logger) logger.addLog(resTpMsg);
+        log(botId, resTpMsg);
+
         if (tpStatus === 'CLOSED') {
             exitPrice = Number(tpOrder.average_fill_price ?? state.tpPrice ?? 0);
             outcome = 'win';
@@ -109,8 +128,16 @@ export async function handleOpenTrade(
 
     // Check SL order
     if (state.stopLossOrderId) {
+        const reqSlMsg = `[Exchange API] ➔ Request: getOrder (Stop Loss) | OrderID: ${state.stopLossOrderId} | Symbol: ${c.SYMBOL}`;
+        if (logger) logger.addLog(reqSlMsg);
+        log(botId, reqSlMsg);
+
         const slOrder = await client.getOrder(state.stopLossOrderId, c.SYMBOL).catch(() => null);
         const slStatus = (slOrder?.state ?? slOrder?.status ?? '').toUpperCase();
+        const resSlMsg = `[Exchange API] ⬅ Response: getOrder (Stop Loss) | OrderID: ${state.stopLossOrderId} | Status: ${slStatus} | FillPrice: ${slOrder?.average_fill_price ?? state.slPrice ?? 'N/A'}`;
+        if (logger) logger.addLog(resSlMsg);
+        log(botId, resSlMsg);
+
         if (slStatus === 'CLOSED') {
             exitPrice = Number(slOrder.average_fill_price ?? state.slPrice ?? 0);
             outcome = 'loss';
@@ -161,21 +188,40 @@ export async function handleOpenTrade(
     });
 
     // Push PnL update to Payload
-    await syncPnlToPayload(c.id, newAllTimePnl, outcome).catch(() => {});
+    await syncPnlToPayload(c.id, newAllTimePnl, outcome, logger);
 
     return { state, isStillOpen: false };
 }
 
 /** Push PnL back to Payload CMS */
-async function syncPnlToPayload(botId: string, allTimePnl: number, outcome: 'win' | 'loss'): Promise<void> {
+async function syncPnlToPayload(botId: string, allTimePnl: number, outcome: 'win' | 'loss', logger?: any): Promise<void> {
     const { default: env } = await import('../config/env');
     const url = `${env.payloadUrl}/api/trading-bots/update-pnl`;
-    await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ botId, allTimePnl, lastTradeOutcome: outcome }),
-        signal: AbortSignal.timeout(10_000),
-    }).catch(() => {});
+    const payload = { botId, allTimePnl, lastTradeOutcome: outcome };
+    const t0 = Date.now();
+    const reqMsg = `[Payload API] ➔ Request: POST /api/trading-bots/update-pnl | Data: ${JSON.stringify(payload)}`;
+    if (logger?.addLog) logger.addLog(reqMsg);
+    console.log(`[PineEngine][${botId}] ${reqMsg}`);
+
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(10_000),
+        });
+        const duration = Date.now() - t0;
+        const text = await res.text();
+        let parsed: any;
+        try { parsed = JSON.parse(text); } catch { parsed = text; }
+        const resMsg = `[Payload API] ⬅ Response: POST /api/trading-bots/update-pnl | Status: ${res.status} ${res.statusText} (${duration}ms) | Response: ${typeof parsed === 'string' ? parsed : JSON.stringify(parsed)}`;
+        if (logger?.addLog) logger.addLog(resMsg);
+        console.log(`[PineEngine][${botId}] ${resMsg}`);
+    } catch (err: any) {
+        const errMsg = `[Payload API] ⬅ Error: POST /api/trading-bots/update-pnl | Error: ${err?.message || String(err)}`;
+        if (logger?.addLog) logger.addLog(errMsg);
+        console.error(`[PineEngine][${botId}] ${errMsg}`);
+    }
 }
 
 /** Get or create an open trade state for the bot */

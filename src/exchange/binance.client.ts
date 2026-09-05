@@ -12,11 +12,19 @@ function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 export class BinanceClient implements IExchangeClient {
     private timeOffset = 0;
 
+    private logger?: any;
+    private botId?: string;
+
     constructor(
         private readonly apiKey: string,
         private readonly secretKey: string,
         private readonly baseUrl: string = 'https://fapi.binance.com',
     ) {}
+
+    setLogger(logger: any, botId?: string): void {
+        this.logger = logger;
+        if (botId) this.botId = botId;
+    }
 
     private sign(queryString: string): string {
         return crypto.createHmac('sha256', this.secretKey)
@@ -45,6 +53,17 @@ export class BinanceClient implements IExchangeClient {
 
     private async request(method: string, endpoint: string, params: Record<string, any> = {}, isPublic = false): Promise<any> {
         const maxAttempts = isPublic ? 2 : 3;
+        const t0 = Date.now();
+        const botPrefix = this.botId ? `[PineEngine][${this.botId}] ` : '';
+
+        const sanitizedParams = { ...params };
+        delete sanitizedParams.signature;
+        delete sanitizedParams.apiKey;
+        const reqDetail = Object.keys(sanitizedParams).length ? `Params: ${JSON.stringify(sanitizedParams)}` : '';
+
+        const reqMsg = `${botPrefix}[Exchange API (Binance)] ➔ Request: ${method} ${endpoint}${reqDetail ? ` | ${reqDetail}` : ''}`;
+        if (this.logger?.addLog) this.logger.addLog(reqMsg);
+        console.log(reqMsg);
 
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
@@ -78,12 +97,16 @@ export class BinanceClient implements IExchangeClient {
                     headers,
                     signal: AbortSignal.timeout(15_000),
                 });
-
+                const duration = Date.now() - t0;
                 const text = await res.text();
                 let json: any;
                 try { json = JSON.parse(text); } catch { json = text; }
 
                 if (!res.ok) {
+                    const errMsg = `${botPrefix}[Exchange API (Binance)] ⬅ Error: ${method} ${endpoint} | Status: ${res.status} (${duration}ms) | Error: ${JSON.stringify(json)}`;
+                    if (this.logger?.addLog) this.logger.addLog(errMsg);
+                    console.error(errMsg);
+
                     // Check for timestamp synchronization issues (-1021)
                     if (json?.code === -1021 && !isPublic && attempt < maxAttempts) {
                         const timeRes = await fetch(`${this.baseUrl}/fapi/v1/time`).catch(() => null);
@@ -97,6 +120,27 @@ export class BinanceClient implements IExchangeClient {
 
                     throw new Error(`Binance API ${res.status}: ${JSON.stringify(json)}`);
                 }
+
+                let previewStr = '';
+                if (endpoint.includes('klines') && Array.isArray(json)) {
+                    const count = json.length;
+                    if (count > 0) {
+                        const first = json[0];
+                        const last = json[count - 1];
+                        const tFirst = first?.[0] ? new Date(first[0]).toISOString() : 'N/A';
+                        const tLast = last?.[0] ? new Date(last[0]).toISOString() : 'N/A';
+                        previewStr = `${count} klines [${tFirst} → ${tLast}] | Latest: O=${last?.[1]} C=${last?.[4]}`;
+                    } else {
+                        previewStr = '0 klines';
+                    }
+                } else {
+                    previewStr = typeof json === 'string' ? json : JSON.stringify(json);
+                    if (previewStr.length > 800) previewStr = previewStr.slice(0, 800) + '...';
+                }
+
+                const resMsg = `${botPrefix}[Exchange API (Binance)] ⬅ Response: ${method} ${endpoint} | Status: ${res.status} (${duration}ms) | Data: ${previewStr}`;
+                if (this.logger?.addLog) this.logger.addLog(resMsg);
+                console.log(resMsg);
 
                 return json;
             } catch (err: any) {

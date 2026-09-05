@@ -43,6 +43,8 @@ export interface ExchangePositionResult {
 }
 
 export interface IExchangeClient {
+    setLogger?(logger: any, botId?: string): void;
+
     // Market Data
     getCandles(symbol: string, resolution: string, limitBars?: number): Promise<Candle[]>;
     getMarkPrice(symbol: string): Promise<number>;

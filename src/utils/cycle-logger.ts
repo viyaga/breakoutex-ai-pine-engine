@@ -80,6 +80,13 @@ export function startCycleLogging(): void {
 }
 
 /**
+ * Returns the path of the currently active cycle log file (if active).
+ */
+export function getActiveLogFile(): string | null {
+    return activeLogFile;
+}
+
+/**
  * Ends cycle logging by resetting the active file and restoring original console functions.
  */
 export function endCycleLogging(): void {
@@ -313,6 +320,52 @@ export class BotCycleLogger {
         this.log(`${'='.repeat(70)}\n`);
     }
 
+    logBackendRequest(opts: { method: string; endpoint: string; url?: string; data?: any }): void {
+        const payloadStr = opts.data !== undefined ? ` | Payload: ${typeof opts.data === 'string' ? opts.data : JSON.stringify(opts.data)}` : '';
+        const msg = `[Payload API] ➔ Request: ${opts.method.toUpperCase()} ${opts.endpoint}${opts.url ? ` (${opts.url})` : ''}${payloadStr}`;
+        this.log(`[PineEngine][${this.botId}] ${msg}`);
+    }
+
+    logBackendResponse(opts: { method: string; endpoint: string; status: number | string; data?: any; durationMs?: number }): void {
+        const durStr = opts.durationMs !== undefined ? ` (${opts.durationMs}ms)` : '';
+        const dataStr = opts.data !== undefined ? ` | Response: ${typeof opts.data === 'string' ? opts.data : JSON.stringify(opts.data)}` : '';
+        const msg = `[Payload API] ⬅ Response: ${opts.method.toUpperCase()} ${opts.endpoint} | Status: ${opts.status}${durStr}${dataStr}`;
+        this.log(`[PineEngine][${this.botId}] ${msg}`);
+    }
+
+    logBackendError(opts: { method: string; endpoint: string; error: any; durationMs?: number }): void {
+        const durStr = opts.durationMs !== undefined ? ` (${opts.durationMs}ms)` : '';
+        const errStr = opts.error?.message || (typeof opts.error === 'string' ? opts.error : JSON.stringify(opts.error));
+        const msg = `[Payload API] ⬅ Error: ${opts.method.toUpperCase()} ${opts.endpoint} | Status: FAILED${durStr} | Error: ${errStr}`;
+        this.error(`[PineEngine][${this.botId}] ${msg}`);
+    }
+
+    logExchangeRequest(opts: { exchange: string; action: string; method?: string; endpoint?: string; data?: any; details?: string }): void {
+        const actionStr = opts.endpoint ? `${opts.method || 'GET'} ${opts.endpoint}` : opts.action;
+        const detailStr = opts.details ? ` | ${opts.details}` : '';
+        const dataStr = opts.data !== undefined ? ` | Data: ${typeof opts.data === 'string' ? opts.data : JSON.stringify(opts.data)}` : '';
+        const msg = `[Exchange API (${opts.exchange})] ➔ Request: ${actionStr}${detailStr}${dataStr}`;
+        this.log(`[PineEngine][${this.botId}] ${msg}`);
+    }
+
+    logExchangeResponse(opts: { exchange: string; action: string; method?: string; endpoint?: string; status: number | string; data?: any; durationMs?: number; details?: string }): void {
+        const actionStr = opts.endpoint ? `${opts.method || 'GET'} ${opts.endpoint}` : opts.action;
+        const durStr = opts.durationMs !== undefined ? ` (${opts.durationMs}ms)` : '';
+        const detailStr = opts.details ? ` | ${opts.details}` : '';
+        const dataStr = opts.data !== undefined ? ` | Response: ${typeof opts.data === 'string' ? opts.data : JSON.stringify(opts.data)}` : '';
+        const msg = `[Exchange API (${opts.exchange})] ⬅ Response: ${actionStr} | Status: ${opts.status}${durStr}${detailStr}${dataStr}`;
+        this.log(`[PineEngine][${this.botId}] ${msg}`);
+    }
+
+    logExchangeError(opts: { exchange: string; action: string; method?: string; endpoint?: string; error: any; status?: number | string; durationMs?: number }): void {
+        const actionStr = opts.endpoint ? `${opts.method || 'GET'} ${opts.endpoint}` : opts.action;
+        const durStr = opts.durationMs !== undefined ? ` (${opts.durationMs}ms)` : '';
+        const statusStr = opts.status !== undefined ? ` | Status: ${opts.status}` : '';
+        const errStr = opts.error?.message || (typeof opts.error === 'string' ? opts.error : JSON.stringify(opts.error));
+        const msg = `[Exchange API (${opts.exchange})] ⬅ Error: ${actionStr}${statusStr}${durStr} | Error: ${errStr}`;
+        this.error(`[PineEngine][${this.botId}] ${msg}`);
+    }
+
     async finalize(finalScore?: number): Promise<void> {
         const duration = Date.now() - this.startTime;
         if (finalScore !== undefined) {
@@ -327,6 +380,54 @@ export class BotCycleLogger {
             promoteCurrentCycleToHighScore({ symbol: this.symbol, score: this.score });
         }
     }
+}
+
+/** Global standalone logging for Backend / Payload API interactions */
+export function logBackendRequest(opts: { method: string; endpoint: string; url?: string; data?: any; botId?: string }): void {
+    const botPrefix = opts.botId ? `[PineEngine][${opts.botId}] ` : '';
+    const payloadStr = opts.data !== undefined ? ` | Payload: ${typeof opts.data === 'string' ? opts.data : JSON.stringify(opts.data)}` : '';
+    console.log(`${botPrefix}[Payload API] ➔ Request: ${opts.method.toUpperCase()} ${opts.endpoint}${opts.url ? ` (${opts.url})` : ''}${payloadStr}`);
+}
+
+export function logBackendResponse(opts: { method: string; endpoint: string; status: number | string; data?: any; durationMs?: number; botId?: string }): void {
+    const botPrefix = opts.botId ? `[PineEngine][${opts.botId}] ` : '';
+    const durStr = opts.durationMs !== undefined ? ` (${opts.durationMs}ms)` : '';
+    const dataStr = opts.data !== undefined ? ` | Response: ${typeof opts.data === 'string' ? opts.data : JSON.stringify(opts.data)}` : '';
+    console.log(`${botPrefix}[Payload API] ⬅ Response: ${opts.method.toUpperCase()} ${opts.endpoint} | Status: ${opts.status}${durStr}${dataStr}`);
+}
+
+export function logBackendError(opts: { method: string; endpoint: string; error: any; durationMs?: number; botId?: string }): void {
+    const botPrefix = opts.botId ? `[PineEngine][${opts.botId}] ` : '';
+    const durStr = opts.durationMs !== undefined ? ` (${opts.durationMs}ms)` : '';
+    const errStr = opts.error?.message || (typeof opts.error === 'string' ? opts.error : JSON.stringify(opts.error));
+    console.error(`${botPrefix}[Payload API] ⬅ Error: ${opts.method.toUpperCase()} ${opts.endpoint} | Status: FAILED${durStr} | Error: ${errStr}`);
+}
+
+/** Global standalone logging for Exchange API interactions */
+export function logExchangeRequest(opts: { exchange: string; action: string; method?: string; endpoint?: string; data?: any; details?: string; botId?: string }): void {
+    const botPrefix = opts.botId ? `[PineEngine][${opts.botId}] ` : '';
+    const actionStr = opts.endpoint ? `${opts.method || 'GET'} ${opts.endpoint}` : opts.action;
+    const detailStr = opts.details ? ` | ${opts.details}` : '';
+    const dataStr = opts.data !== undefined ? ` | Data: ${typeof opts.data === 'string' ? opts.data : JSON.stringify(opts.data)}` : '';
+    console.log(`${botPrefix}[Exchange API (${opts.exchange})] ➔ Request: ${actionStr}${detailStr}${dataStr}`);
+}
+
+export function logExchangeResponse(opts: { exchange: string; action: string; method?: string; endpoint?: string; status: number | string; data?: any; durationMs?: number; details?: string; botId?: string }): void {
+    const botPrefix = opts.botId ? `[PineEngine][${opts.botId}] ` : '';
+    const actionStr = opts.endpoint ? `${opts.method || 'GET'} ${opts.endpoint}` : opts.action;
+    const durStr = opts.durationMs !== undefined ? ` (${opts.durationMs}ms)` : '';
+    const detailStr = opts.details ? ` | ${opts.details}` : '';
+    const dataStr = opts.data !== undefined ? ` | Response: ${typeof opts.data === 'string' ? opts.data : JSON.stringify(opts.data)}` : '';
+    console.log(`${botPrefix}[Exchange API (${opts.exchange})] ⬅ Response: ${actionStr} | Status: ${opts.status}${durStr}${detailStr}${dataStr}`);
+}
+
+export function logExchangeError(opts: { exchange: string; action: string; method?: string; endpoint?: string; error: any; status?: number | string; durationMs?: number; botId?: string }): void {
+    const botPrefix = opts.botId ? `[PineEngine][${opts.botId}] ` : '';
+    const actionStr = opts.endpoint ? `${opts.method || 'GET'} ${opts.endpoint}` : opts.action;
+    const durStr = opts.durationMs !== undefined ? ` (${opts.durationMs}ms)` : '';
+    const statusStr = opts.status !== undefined ? ` | Status: ${opts.status}` : '';
+    const errStr = opts.error?.message || (typeof opts.error === 'string' ? opts.error : JSON.stringify(opts.error));
+    console.error(`${botPrefix}[Exchange API (${opts.exchange})] ⬅ Error: ${actionStr}${statusStr}${durStr} | Error: ${errStr}`);
 }
 
 

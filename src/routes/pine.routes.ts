@@ -10,6 +10,7 @@ import { evaluatePineScript } from '../interpreter';
 import { Backtester, getAllStrategies, getStrategyById } from '../backtesting';
 import { PineBotConfig } from '../config/types';
 import env from '../config/env';
+import { startCycleLogging, endCycleLogging } from '../utils/cycle-logger';
 
 const router = Router();
 
@@ -21,12 +22,18 @@ router.post('/trigger', async (req: Request, res: Response) => {
     const { botId } = req.body as { botId?: string };
     const ts = new Date().toISOString();
 
+    startCycleLogging();
+    console.log(`\n${'─'.repeat(60)}`);
+    console.log(`[Manual Trigger] ▶ CYCLE START  ${ts}${botId ? ` (Bot: ${botId})` : ' (All Bots)'}`);
+    console.log(`${'─'.repeat(60)}`);
+
     try {
         clearCycleCache();
         const allBots = await fetchActivePineBots();
         const bots    = botId ? allBots.filter(b => b.id === botId) : allBots;
 
         if (!bots.length) {
+            console.log('[Manual Trigger] No matching active Pine bots found');
             return void res.status(404).json({ success: false, message: 'No matching active Pine bots found', ts });
         }
 
@@ -42,7 +49,13 @@ router.post('/trigger', async (req: Request, res: Response) => {
 
         return void res.json({ success: true, ts, triggered: bots.length, summary });
     } catch (err: any) {
+        console.error('[Manual Trigger] Error executing cycle:', err);
         return void res.status(500).json({ success: false, message: err.message, ts });
+    } finally {
+        console.log(`${'─'.repeat(60)}`);
+        console.log(`[Manual Trigger] ■ CYCLE DONE  ${new Date().toISOString()}`);
+        console.log(`${'─'.repeat(60)}\n`);
+        endCycleLogging();
     }
 });
 

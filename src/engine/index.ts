@@ -56,7 +56,8 @@ export function clearCycleCache() {
 async function fetchTimeframeCandles(
     client: IExchangeClient,
     symbol: string,
-    timeframe: string
+    timeframe: string,
+    logger?: BotCycleLogger
 ): Promise<Candle[] | null> {
     const normTf = normalizeTimeframe(timeframe);
     const key = `${symbol.toUpperCase().trim()}:${normTf}`;
@@ -65,6 +66,9 @@ async function fetchTimeframeCandles(
     // 1. Check TTL Cache (Zero exchange API calls if valid)
     const cached = smartCandleCache.get(key);
     if (cached && now - cached.cachedAt < cached.ttlMs) {
+        const cacheMsg = `[PineEngine] 📦 Cache Hit: ${key} (${cached.candles.length} bars, age ${Math.round((now - cached.cachedAt) / 1000)}s / TTL ${Math.round(cached.ttlMs / 1000)}s)`;
+        if (logger) logger.addLog(cacheMsg);
+        console.log(cacheMsg);
         return cached.candles;
     }
 
@@ -140,7 +144,7 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
     const logger = new BotCycleLogger(botId, c.SYMBOL);
     logger.addLog(`Bot Configuration: Mode=${c.MODE} | Capital=$${c.CAPITAL_AMOUNT} | Leverage=${c.LEVERAGE}x | TF=${c.TIMEFRAME} | AI_Managed=${Boolean(c.IS_AI_MANAGED)} | MinScore=${c.MIN_SCORE || 50}`);
 
-    const client = createExchangeClient(c);
+    const client = createExchangeClient(c, logger);
 
     try {
         // AI Managed Bot: evaluate market regime directly via Gemini across 5m, 15m, 1h, and 4h
@@ -148,10 +152,10 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
         if (c.IS_AI_MANAGED && isAiDue) {
             try {
                 const [baseTfCandles, tf15mCandles, tf1hCandles, tf4hCandles] = await Promise.all([
-                    fetchTimeframeCandles(client, c.SYMBOL, c.TIMEFRAME || '5m'),
-                    fetchTimeframeCandles(client, c.SYMBOL, '15m'),
-                    fetchTimeframeCandles(client, c.SYMBOL, '1h'),
-                    fetchTimeframeCandles(client, c.SYMBOL, '4h'),
+                    fetchTimeframeCandles(client, c.SYMBOL, c.TIMEFRAME || '5m', logger),
+                    fetchTimeframeCandles(client, c.SYMBOL, '15m', logger),
+                    fetchTimeframeCandles(client, c.SYMBOL, '1h', logger),
+                    fetchTimeframeCandles(client, c.SYMBOL, '4h', logger),
                 ]);
                 if (baseTfCandles && baseTfCandles.length) {
                     await evaluateAndApplyAiStrategy(
@@ -194,7 +198,7 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
         const candleMap = new Map<string, Candle[]>();
         await Promise.all(
             requiredTfs.map(async tf => {
-                const cList = await fetchTimeframeCandles(client, c.SYMBOL, tf);
+                const cList = await fetchTimeframeCandles(client, c.SYMBOL, tf, logger);
                 if (cList) candleMap.set(normalizeTimeframe(tf), cList);
             })
         );

@@ -20,6 +20,7 @@
     "src/scripts/debug-bar-73.ts",
     "src/scripts/debug-candle-parity.ts",
     "src/scripts/debug-donchian-parity.ts",
-    "src/scripts/test-cross-engine-parity.ts"
+    "src/scripts/test-cross-engine-parity.ts",
+    "src/scripts/test-all-existing-pine.ts"
   ]
 }

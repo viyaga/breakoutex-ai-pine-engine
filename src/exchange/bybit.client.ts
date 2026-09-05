@@ -12,11 +12,19 @@ function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 export class BybitClient implements IExchangeClient {
     private timeOffset = 0;
 
+    private logger?: any;
+    private botId?: string;
+
     constructor(
         private readonly apiKey: string,
         private readonly secretKey: string,
         private readonly baseUrl: string = 'https://api.bybit.com',
     ) {}
+
+    setLogger(logger: any, botId?: string): void {
+        this.logger = logger;
+        if (botId) this.botId = botId;
+    }
 
     private sign(timestamp: number, payload: string): string {
         const recvWindow = '5000';
@@ -47,6 +55,14 @@ export class BybitClient implements IExchangeClient {
 
     private async request(method: string, endpoint: string, params: Record<string, any> = {}, isPublic = false): Promise<any> {
         const maxAttempts = isPublic ? 2 : 3;
+        const t0 = Date.now();
+        const botPrefix = this.botId ? `[PineEngine][${this.botId}] ` : '';
+
+        const sanitizedParams = { ...params };
+        const reqDetail = Object.keys(sanitizedParams).length ? `Params: ${JSON.stringify(sanitizedParams)}` : '';
+        const reqMsg = `${botPrefix}[Exchange API (Bybit)] ➔ Request: ${method} ${endpoint}${reqDetail ? ` | ${reqDetail}` : ''}`;
+        if (this.logger?.addLog) this.logger.addLog(reqMsg);
+        console.log(reqMsg);
 
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
@@ -88,12 +104,16 @@ export class BybitClient implements IExchangeClient {
                     body: (method !== 'GET' && bodyStr) ? bodyStr : undefined,
                     signal: AbortSignal.timeout(15_000),
                 });
-
+                const duration = Date.now() - t0;
                 const text = await res.text();
                 let json: any;
                 try { json = JSON.parse(text); } catch { json = text; }
 
                 if (!res.ok || json?.retCode !== 0) {
+                    const errMsg = `${botPrefix}[Exchange API (Bybit)] ⬅ Error: ${method} ${endpoint} | Status: ${res.status} (${duration}ms) | Code: ${json?.retCode} | Msg: ${json?.retMsg || JSON.stringify(json)}`;
+                    if (this.logger?.addLog) this.logger.addLog(errMsg);
+                    console.error(errMsg);
+
                     // Handle time offset error (10002)
                     if (json?.retCode === 10002 && !isPublic && attempt < maxAttempts) {
                         const timeRes = await fetch(`${this.baseUrl}/v5/market/time`).catch(() => null);
@@ -108,6 +128,28 @@ export class BybitClient implements IExchangeClient {
 
                     throw new Error(`Bybit API Error (${json?.retCode}): ${json?.retMsg || JSON.stringify(json)}`);
                 }
+
+                let previewStr = '';
+                if (endpoint.includes('kline') && Array.isArray(json?.result?.list)) {
+                    const list = json.result.list;
+                    const count = list.length;
+                    if (count > 0) {
+                        const first = list[list.length - 1]; // Bybit returns reverse order
+                        const last = list[0];
+                        const tFirst = first?.[0] ? new Date(Number(first[0])).toISOString() : 'N/A';
+                        const tLast = last?.[0] ? new Date(Number(last[0])).toISOString() : 'N/A';
+                        previewStr = `${count} klines [${tFirst} → ${tLast}] | Latest: O=${last?.[1]} C=${last?.[4]}`;
+                    } else {
+                        previewStr = '0 klines';
+                    }
+                } else {
+                    previewStr = typeof json === 'string' ? json : JSON.stringify(json);
+                    if (previewStr.length > 800) previewStr = previewStr.slice(0, 800) + '...';
+                }
+
+                const resMsg = `${botPrefix}[Exchange API (Bybit)] ⬅ Response: ${method} ${endpoint} | Status: ${res.status} (${duration}ms) | Code: ${json?.retCode} | Data: ${previewStr}`;
+                if (this.logger?.addLog) this.logger.addLog(resMsg);
+                console.log(resMsg);
 
                 return json;
             } catch (err: any) {
