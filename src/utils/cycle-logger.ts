@@ -21,6 +21,51 @@ let originalLog: typeof console.log | null = null;
 let originalError: typeof console.error | null = null;
 let originalWarn: typeof console.warn | null = null;
 
+const ISO_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z/;
+
+/**
+ * Creates a structured logger matching the BreakoutEx Bot Engine architecture.
+ * Outputs: YYYY-MM-DDTHH:mm:ss.sssZ [LEVEL] [serviceName]: message
+ */
+export const createConsoleLogger = (serviceName: string) => {
+    const log = (level: 'info' | 'warn' | 'error' | 'debug', message: string, meta?: any) => {
+        const timestamp = new Date().toISOString();
+        let msg = `${timestamp} [${level.toUpperCase()}] [${serviceName}]: ${message}`;
+
+        if (meta !== undefined) {
+            if (meta instanceof Error) {
+                msg += `\n${meta.stack || meta.message}`;
+            } else if (typeof meta === 'string') {
+                msg += `\n${meta}`;
+            } else if (typeof meta === 'object' && Object.keys(meta).length > 0) {
+                msg += ` ${util.inspect(meta, { depth: 4 })}`;
+            }
+        }
+
+        if (level === 'error') {
+            console.error(msg);
+        } else if (level === 'warn') {
+            console.warn(msg);
+        } else {
+            console.log(msg);
+        }
+    };
+
+    return {
+        debug: (message: string, meta?: any) => log('debug', message, meta),
+        info: (message: string, meta?: any) => log('info', message, meta),
+        warn: (message: string, meta?: any) => log('warn', message, meta),
+        error: (message: string, meta?: any) => log('error', message, meta)
+    };
+};
+
+export const tradingCronLogger = createConsoleLogger('trading-cron');
+export const tradingCycleLogger = createConsoleLogger('trading-cycle');
+export const marketDataLogger = createConsoleLogger('market-data');
+export const positionManagerLogger = createConsoleLogger('position-manager');
+export const tradeExecLogger = createConsoleLogger('trade-exec');
+export const syncLogger = createConsoleLogger('sync');
+
 /** Ensure log directories exist */
 function ensureDirs(): void {
     if (!fs.existsSync(LOG_DIR)) {
@@ -57,17 +102,17 @@ export function startCycleLogging(): void {
 
             console.log = (...args: any[]) => {
                 originalLog!(...args);
-                writeToActiveLog(util.format(...args));
+                writeToActiveLog(util.format(...args), 'INFO');
             };
 
             console.error = (...args: any[]) => {
                 originalError!(...args);
-                writeToActiveLog(util.format(...args));
+                writeToActiveLog(util.format(...args), 'ERROR');
             };
 
             console.warn = (...args: any[]) => {
                 originalWarn!(...args);
-                writeToActiveLog(util.format(...args));
+                writeToActiveLog(util.format(...args), 'WARN');
             };
         }
     } catch (err) {
@@ -102,13 +147,31 @@ export function endCycleLogging(): void {
 }
 
 /**
- * Appends text content to the active log file, ensuring no ANSI colors are written.
+ * Appends text content to the active log file, ensuring no ANSI colors are written
+ * and all top-level lines are cleanly prefixed with ISO timestamps and subsystems.
  */
-function writeToActiveLog(text: string): void {
+function writeToActiveLog(text: string, defaultLevel: 'INFO' | 'WARN' | 'ERROR' = 'INFO'): void {
     if (activeLogFile) {
         try {
             const cleanText = text.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
-            fs.appendFileSync(activeLogFile, cleanText + '\n');
+            const lines = cleanText.split('\n');
+            const processedLines = lines.map(line => {
+                const trimmed = line.trim();
+                if (!trimmed) return '';
+                if (ISO_TIMESTAMP_REGEX.test(trimmed)) {
+                    return line;
+                }
+                // Separator lines (e.g. ==== or ────)
+                if (/^[=\-─_]{10,}$/.test(trimmed)) {
+                    return `${new Date().toISOString()} [${defaultLevel}] [trading-cron]: ${trimmed}`;
+                }
+                // JSON object formatting / indentation
+                if (/^\s*[{}]/.test(line) || /^\s+["'\w]+:/.test(line)) {
+                    return line;
+                }
+                return `${new Date().toISOString()} [${defaultLevel}] [pine-engine]: ${line}`;
+            });
+            fs.appendFileSync(activeLogFile, processedLines.join('\n') + '\n');
         } catch (err) {
             if (originalError) {
                 originalError('Failed to write to cycle log:', err);
@@ -251,32 +314,45 @@ export class BotCycleLogger {
     private logs: string[] = [];
     private startTime: number = Date.now();
     public score?: number;
+    public readonly cycleId: string;
 
     constructor(
         public readonly botId: string,
-        public readonly symbol: string
+        public readonly symbol: string,
+        cycleId?: string
     ) {
-        this.addLog(`=== [PineEngine] BOT CYCLE START: ${symbol} (Bot ID: ${botId}) ===`);
+        this.cycleId = cycleId || `cycle-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        this.addLog(`[TradingCycle] ========== START PROCESSING BOT: ${symbol} (ID: ${botId}) ==========`);
     }
 
     addLog(msg: string): void {
         const timeStr = new Date().toISOString();
-        this.logs.push(`[${timeStr}] ${msg}`);
+        if (ISO_TIMESTAMP_REGEX.test(msg.trim())) {
+            this.logs.push(msg);
+        } else {
+            this.logs.push(`${timeStr} [INFO] [trading-cycle]: ${msg}`);
+        }
     }
 
     log(msg: string): void {
         this.addLog(msg);
-        console.log(msg);
+        if (ISO_TIMESTAMP_REGEX.test(msg.trim())) {
+            console.log(msg);
+        } else {
+            tradingCycleLogger.info(msg);
+        }
     }
 
     warn(msg: string): void {
-        this.addLog(`[WARN] ${msg}`);
-        console.warn(msg);
+        const timeStr = new Date().toISOString();
+        this.logs.push(`${timeStr} [WARN] [trading-cycle]: ${msg}`);
+        tradingCycleLogger.warn(msg);
     }
 
     error(msg: string): void {
-        this.addLog(`[ERROR] ${msg}`);
-        console.error(msg);
+        const timeStr = new Date().toISOString();
+        this.logs.push(`${timeStr} [ERROR] [trading-cycle]: ${msg}`);
+        tradingCycleLogger.error(msg);
     }
 
     setScore(score?: number): void {

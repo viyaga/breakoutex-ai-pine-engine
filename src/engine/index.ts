@@ -8,11 +8,12 @@ import { createExchangeClient } from '../exchange/exchange.factory';
 import { evaluatePineScript, extractRequestedTimeframes, normalizeTimeframe } from '../interpreter';
 import { PineTradeState } from '../models/tradeState.model';
 import { PineBotConfig } from '../config/types';
-import { syncLeverage, handleOpenTrade, getOrCreateState } from './position-manager';
+import { syncLeverage, handleOpenTrade, getOrCreateState, PineStateTracker } from './position-manager';
 import { executeTrade } from './trade-executor';
 import { Candle } from '../config/types';
 import { isAiEvaluationDue, evaluateAndApplyAiStrategy, computeMarketSnapshot } from './ai-market-evaluator';
-import { BotCycleLogger } from '../utils/cycle-logger';
+import { BotCycleLogger, tradingCycleLogger, marketDataLogger, positionManagerLogger } from '../utils/cycle-logger';
+import { StrategyPerformanceTracker } from './strategy-performance-tracker';
 
 // Multi-Timeframe TTL Smart Candle Cache across all bots and cycles
 interface CandleCacheEntry {
@@ -26,20 +27,20 @@ const pendingFetches = new Map<string, Promise<Candle[] | null>>();
 
 function getTtlForTimeframe(normTf: string): number {
     switch (normTf) {
-        case '1m': return 25 * 1000;       // 25s
-        case '3m': return 60 * 1000;       // 1m
-        case '5m': return 50 * 1000;       // 50s (protects across cycle iterations)
-        case '15m': return 3 * 60 * 1000;   // 3m (15m candle doesn't change closed bars for 15m)
-        case '30m': return 5 * 60 * 1000;   // 5m
+        case '1m': return 45 * 1000;              // 45s
+        case '3m': return 2 * 60 * 1000;          // 2m
+        case '5m': return 3.5 * 60 * 1000;        // 3.5m (safely protects across 3-4 cycles for closed 5m bars)
+        case '15m': return 10 * 60 * 1000;        // 10m (closed 15m bars remain static for 15m)
+        case '30m': return 20 * 60 * 1000;        // 20m
         case '1h':
-        case '60': return 10 * 60 * 1000;  // 10m (1h candle doesn't change closed bars for 60m)
+        case '60': return 45 * 60 * 1000;         // 45m (1h closed bars don't change for 60m)
         case '2h':
-        case '120': return 20 * 60 * 1000; // 20m
+        case '120': return 90 * 60 * 1000;        // 90m
         case '4h':
-        case '240': return 30 * 60 * 1000; // 30m (4h candle only closes every 4 hours)
+        case '240': return 3 * 60 * 60 * 1000;    // 3 hours (4h candle closes only every 4h)
         case '1d':
-        case 'D': return 60 * 60 * 1000;   // 1 hour
-        default: return 60 * 1000;
+        case 'D': return 6 * 60 * 60 * 1000;      // 6 hours
+        default: return 3 * 60 * 1000;
     }
 }
 
@@ -51,6 +52,11 @@ export function clearCycleCache() {
             smartCandleCache.delete(key);
         }
     }
+}
+
+function formatCandleTarget(candle: Candle): string {
+    const color = candle.close >= candle.open ? 'green' : 'red';
+    return `Target: [O:${candle.open}, H:${candle.high}, L:${candle.low}, C:${candle.close}, Color:${color}]`;
 }
 
 async function fetchTimeframeCandles(
@@ -66,9 +72,8 @@ async function fetchTimeframeCandles(
     // 1. Check TTL Cache (Zero exchange API calls if valid)
     const cached = smartCandleCache.get(key);
     if (cached && now - cached.cachedAt < cached.ttlMs) {
-        const cacheMsg = `[PineEngine] 📦 Cache Hit: ${key} (${cached.candles.length} bars, age ${Math.round((now - cached.cachedAt) / 1000)}s / TTL ${Math.round(cached.ttlMs / 1000)}s)`;
+        const cacheMsg = `[MarketData] 📦 Cache Hit: ${key} (${cached.candles.length} bars, age ${Math.round((now - cached.cachedAt) / 1000)}s / TTL ${Math.round(cached.ttlMs / 1000)}s)`;
         if (logger) logger.addLog(cacheMsg);
-        console.log(cacheMsg);
         return cached.candles;
     }
 
@@ -121,11 +126,21 @@ async function canEnterTrade(state: any, c: PineBotConfig): Promise<{ ok: boolea
 
     // 3. Max concurrent trades limit
     const maxTrades = Math.max(1, c.MAX_CONCURRENT_TRADES || 1);
-    const activeOpenCount = await PineTradeState.countDocuments({
-        botId: c.id,
-        status: 'open',
-        tradeOutcome: 'pending',
-    });
+    const hasPending = PineStateTracker.hasPendingTrade(c.id);
+    let activeOpenCount = 0;
+
+    if (hasPending) {
+        if (maxTrades === 1) {
+            activeOpenCount = 1;
+        } else {
+            activeOpenCount = await PineTradeState.countDocuments({
+                botId: c.id,
+                status: 'open',
+                tradeOutcome: 'pending',
+            });
+        }
+    }
+
     if (activeOpenCount >= maxTrades) {
         return { ok: false, reason: `Max concurrent trades limit reached (${activeOpenCount}/${maxTrades})` };
     }
@@ -135,14 +150,26 @@ async function canEnterTrade(state: any, c: PineBotConfig): Promise<{ ok: boolea
 
 export async function runPineCycle(c: PineBotConfig): Promise<void> {
     const botId = c.id;
+    const botStartTime = Date.now();
+    const cycleId = `cycle-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
     if (!c.SYMBOL) {
-        console.warn(`[PineEngine][${botId}] No SYMBOL — skipping`);
+        tradingCycleLogger.warn(`[TradingCycle] No SYMBOL for bot ${botId} — skipping`);
         return;
     }
 
-    const logger = new BotCycleLogger(botId, c.SYMBOL);
-    logger.addLog(`Bot Configuration: Mode=${c.MODE} | Capital=$${c.CAPITAL_AMOUNT} | Leverage=${c.LEVERAGE}x | TF=${c.TIMEFRAME} | AI_Managed=${Boolean(c.IS_AI_MANAGED)} | MinScore=${c.MIN_SCORE || 50}`);
+    const logger = new BotCycleLogger(botId, c.SYMBOL, cycleId);
+    const context = { cycleId, symbol: c.SYMBOL, tradingBotId: botId };
+
+    tradingCycleLogger.info(
+        `[TradingCycle] ========== START PROCESSING BOT: ${c.SYMBOL} (ID: ${botId}) ==========`,
+        context
+    );
+
+    tradingCycleLogger.info(
+        `[Config] Bot Configuration: Mode=${c.MODE || 'balanced'} | Capital=$${c.CAPITAL_AMOUNT} | Leverage=${c.LEVERAGE}x | TF=${c.TIMEFRAME} | AI_Managed=${Boolean(c.IS_AI_MANAGED)} | MinScore=${c.MIN_SCORE || 50}`,
+        context
+    );
 
     const client = createExchangeClient(c, logger);
 
@@ -173,26 +200,25 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
             }
         } else if (c.IS_AI_MANAGED) {
             const stratName = c.CURRENT_STRATEGY_NAME || c.CURRENT_STRATEGY_ID || 'Active Strategy';
-            logger.log(`[PineEngine][${botId}] 🤖 Active AI Strategy: "${stratName}" (Regime: ${c.MARKET_CONDITION || 'detected'})`);
+            tradingCycleLogger.info(`[AIMarketEvaluator] 🤖 Active AI Strategy: "${stratName}" (Regime: ${c.MARKET_CONDITION || 'detected'})`, context);
         }
 
         if (!c.PINE_SCRIPT?.trim()) {
             if (c.IS_AI_MANAGED && c.CURRENT_STRATEGY_ID === 'stand_aside') {
-                logger.log(`[PineEngine][${botId}] ⏸️ AI Status: STANDING ASIDE (${c.AI_REASONING || 'Market condition unfavorable'}) — skipping trade entry`);
+                tradingCycleLogger.info(`[AIMarketEvaluator] ⏸️ AI Status: STANDING ASIDE (${c.AI_REASONING || 'Market condition unfavorable'}) — skipping trade entry`, context);
             } else {
-                logger.warn(`[PineEngine][${botId}] No Pine Script — skipping`);
+                tradingCycleLogger.warn(`[PineEngine] No Pine Script configured — skipping`, context);
             }
             return;
         }
 
-        logger.log(`[PineEngine][${botId}] ── START ${c.SYMBOL} ${c.IS_AI_MANAGED ? '(AI Managed)' : ''} ──`);
-
-        // 1. Sync leverage (non-blocking)
+        // 1. Sync leverage
+        tradingCycleLogger.info(`[LeverageSync] Checking leverage for product ${c.PRODUCT_ID || c.SYMBOL}...`, context);
         await syncLeverage(client, c, logger);
 
         // 2. Identify all required timeframes (Multi-Timeframe support)
         const requiredTfs = extractRequestedTimeframes(c.PINE_SCRIPT, c.TIMEFRAME);
-        logger.log(`[PineEngine][${botId}] Required Timeframes: ${requiredTfs.join(', ')}`);
+        tradingCycleLogger.info(`[MarketData] Required Timeframes: ${requiredTfs.join(', ')}`, context);
 
         // 3. Fetch candles for all timeframes in parallel
         const candleMap = new Map<string, Candle[]>();
@@ -206,20 +232,58 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
         const baseNormTf = normalizeTimeframe(c.TIMEFRAME);
         const baseCandles = candleMap.get(baseNormTf);
         if (!baseCandles || !baseCandles.length) {
-            logger.log(`[PineEngine][${botId}] No base candles (${c.TIMEFRAME}) — skip`);
+            marketDataLogger.warn(`[MarketData] SKIP: Missing closed candles for ${c.SYMBOL} on base timeframe (${c.TIMEFRAME})`, context);
             return;
         }
 
-        logger.log(`[PineEngine][${botId}] Loaded ${candleMap.size} TF series (Base ${baseNormTf}: ${baseCandles.length} bars)`);
+        // Ponraj-style Candlestick Data block
+        const targetLines: string[] = [];
+        const entryTarget = baseCandles[baseCandles.length - 1];
+        targetLines.push(`          ENTRY (${c.TIMEFRAME}): ${baseCandles.length} candles, ${formatCandleTarget(entryTarget)}`);
+
+        const confCandles = candleMap.get('15m') || candleMap.get('15');
+        if (confCandles && confCandles.length) {
+            const target = confCandles[confCandles.length - 1];
+            targetLines.push(`          CONFIRMATION (15m): ${confCandles.length} candles, ${formatCandleTarget(target)}`);
+        }
+        const structCandles = candleMap.get('1h') || candleMap.get('60');
+        if (structCandles && structCandles.length) {
+            const target = structCandles[structCandles.length - 1];
+            targetLines.push(`          STRUCTURE (1h): ${structCandles.length} candles, ${formatCandleTarget(target)}`);
+        }
+        const macroCandles = candleMap.get('4h') || candleMap.get('240');
+        if (macroCandles && macroCandles.length) {
+            const target = macroCandles[macroCandles.length - 1];
+            targetLines.push(`          MACRO (4h): ${macroCandles.length} candles, ${formatCandleTarget(target)}`);
+        }
+
+        marketDataLogger.info(`[MarketData] Candlestick Data Fetched:\n${targetLines.join('\n')}`, context);
+
+        const currentPrice = entryTarget.close;
+        marketDataLogger.debug(`[MarketPrice] Fetching latest price for ${c.SYMBOL}...`, context);
+        marketDataLogger.info(`[MarketPrice] Current Mark Price: ${currentPrice}`, context);
 
         // 4. Load trade state
         const state = await getOrCreateState(c);
+        const stratId = c.CURRENT_STRATEGY_ID || 'default';
+        const cooldownCheck = StrategyPerformanceTracker.isStrategyInCooldown(c.SYMBOL, stratId);
+        const cooldownStatus = cooldownCheck.inCooldown
+            ? `Active (${cooldownCheck.remainingMinutes}m remaining)`
+            : 'None';
+        const stateId = (state as any)._id?.toString() || botId;
+        tradingCycleLogger.info(
+            `[State] Loaded state: ID=${stateId}, Outcome=${state.tradeOutcome}, Status=${state.status}, DailyPnL=$${(state.dailyPnl || 0).toFixed(2)}, Cooldown=${cooldownStatus}`,
+            context
+        );
 
         // 5. Handle open/pending trade
         if (state.entryOrderId && state.tradeOutcome === 'pending') {
             const { isStillOpen } = await handleOpenTrade(client, state, c, logger);
             if (isStillOpen) {
-                logger.log(`[PineEngine][${botId}] Trade still open — no new entry`);
+                positionManagerLogger.info(
+                    `[PositionManager] Position is active. Managing existing position. No new entries allowed.`,
+                    context
+                );
                 return;
             }
             await getOrCreateState(c);
@@ -228,7 +292,7 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
         // 6. Safety check (Daily loss limit, Weekend filter, Concurrent trades)
         const safetyCheck = await canEnterTrade(state, c);
         if (!safetyCheck.ok) {
-            logger.log(`[PineEngine][${botId}] Safety check failed: ${safetyCheck.reason}`);
+            tradingCycleLogger.info(`[SafetyCheck] SKIP: ${safetyCheck.reason}`, context);
             return;
         }
 
@@ -249,12 +313,15 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
         // 8. Evaluate Pine Script (with full MTF map)
         const signal = evaluatePineScript(c.PINE_SCRIPT, candleMap, c.TIMEFRAME);
         logger.setScore(signal.score);
-        const signalLog = `Signal: action=${signal.action} score=${signal.score ?? 'N/A'} comment="${signal.comment ?? ''}"`;
-        logger.log(`[PineEngine][${botId}] ${signalLog}`);
+
+        tradingCycleLogger.info(
+            `[Signal] Action=${signal.action.toUpperCase()} | Score=${signal.score ?? 'N/A'} | Strategy="${c.CURRENT_STRATEGY_NAME || c.CURRENT_STRATEGY_ID || 'Pine'}" | Comment="${signal.comment ?? ''}"`,
+            context
+        );
 
         if (signal.action === 'none' || signal.action === 'close') {
             if (signal.action === 'close' && state.entryOrderId) {
-                logger.log(`[PineEngine][${botId}] Close signal — position management active`);
+                positionManagerLogger.info(`[PositionManager] Close signal received — closing position`, context);
             }
             return;
         }
@@ -262,7 +329,7 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
         // 9. Min Score Gating Check
         const minScoreThreshold = Math.max(0, c.MIN_SCORE || 50);
         if (signal.score !== undefined && signal.score < minScoreThreshold) {
-            logger.log(`[PineEngine][${botId}] Signal suppressed: score (${signal.score}) < required minScore (${minScoreThreshold})`);
+            tradingCycleLogger.info(`[SignalGating] Signal suppressed: score (${signal.score}) < required minScore (${minScoreThreshold})`, context);
             return;
         }
 
@@ -272,10 +339,14 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
 
     } catch (err: any) {
         const msg = String(err?.message ?? err);
-        logger.error(`[PineEngine][${botId}] Error: ${msg}`);
+        tradingCycleLogger.error(`[TradingCycle] Bot error: ${msg}`, context);
         await handleBotError(botId, msg);
     } finally {
-        logger.log(`[PineEngine][${botId}] ── DONE ──`);
+        const botDur = Date.now() - botStartTime;
+        tradingCycleLogger.info(
+            `[TradingCycle] ========== END PROCESSING BOT: ${c.SYMBOL} (ID: ${botId}) ========== (Duration: ${botDur}ms)`,
+            context
+        );
         await logger.finalize();
     }
 }

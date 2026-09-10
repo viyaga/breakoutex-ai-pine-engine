@@ -6,6 +6,7 @@
 import { IExchangeClient } from '../exchange/exchange.interface';
 import { PineTradeState, PineBotError } from '../models/tradeState.model';
 import { PineBotConfig, OrderSide } from '../config/types';
+import { PineStateTracker } from './position-manager';
 
 function log(botId: string, msg: string) { console.log(`[TradeExec][${botId}] ${msg}`); }
 
@@ -230,6 +231,9 @@ export async function executeTrade(
         entryFilledAt:      new Date(),
         lastTradeSettledAt: new Date(),
     });
+
+    // Invalidate state tracker cache so next cycle reloads pending state
+    PineStateTracker.invalidate(botId);
 
     // Clear any lingering bot error
     await PineBotError.findOneAndUpdate(

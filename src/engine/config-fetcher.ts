@@ -12,9 +12,17 @@ const DELTA_BASE_URL = 'https://api.india.delta.exchange/v2';
 const productCache = new Map<string, { data: any; ts: number }>();
 const PRODUCT_TTL  = 60 * 60 * 1000;
 
-// Bot config cache (30 seconds)
+// Bot config cache (10 minutes TTL to reduce backend load)
 let configCache: { data: PineBotConfig[]; ts: number } | null = null;
-const CONFIG_TTL = 30_000;
+const CONFIG_TTL = 10 * 60 * 1000;
+
+/**
+ * Manually invalidate bot config cache (e.g. from admin API or webhook)
+ */
+export function invalidateConfigCache(): void {
+    configCache = null;
+    console.log('[Config] Bot config cache invalidated manually.');
+}
 
 async function fetchJson(url: string): Promise<any | null> {
     for (let attempt = 1; attempt <= 3; attempt++) {

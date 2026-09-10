@@ -1,11 +1,22 @@
 import env from '../config/env';
 import { PineBotConfig, Candle } from '../config/types';
-import { getStrategyById, getStrategyCatalogForAi, STRATEGY_LIBRARY, getStrategiesForMarketCondition, PineStrategyDefinition, BacktestResult, Backtester } from '../backtesting';
+import {
+    getStrategyById,
+    getStrategyCatalogForAi,
+    STRATEGY_LIBRARY,
+    getStrategiesForMarketCondition,
+    PineStrategyDefinition,
+    BacktestResult,
+    Backtester,
+    AIRobustnessScorer,
+    ComprehensiveRobustnessReport,
+} from '../backtesting';
 import * as ind from '../interpreter';
 
 import { generateWithGemini } from '../ai/gemini-client';
 import { normalizeTimeframe } from '../interpreter';
 import { BotCycleLogger } from '../utils/cycle-logger';
+import { StrategyPerformanceTracker } from './strategy-performance-tracker';
 
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
@@ -308,7 +319,7 @@ export async function evaluateAndApplyAiStrategy(
     tf4hCandles?: Candle[],
     logger?: BotCycleLogger
 ): Promise<void> {
-    const botId = bot.id;
+    const botId = bot.id || (bot as any)._id || 'bot';
     const symbol = bot.SYMBOL;
     const baseTf = bot.TIMEFRAME || '5m';
 
@@ -363,7 +374,28 @@ export async function evaluateAndApplyAiStrategy(
             eligibleStrategies = Object.values(STRATEGY_LIBRARY);
         }
 
-        // 3. Run live in-memory backtest simulation on eligible candidate strategies with full MTF candle map
+        // Phase 3: Cooldown Filtering (Exclude strategies with 2 consecutive losses on this symbol)
+        const cooledDownList: string[] = [];
+        let candidateStrategies = eligibleStrategies.filter(s => {
+            const cd = StrategyPerformanceTracker.isStrategyInCooldown(symbol, s.id);
+            if (cd.inCooldown) {
+                cooledDownList.push(`${s.id} (${cd.remainingMinutes}m left)`);
+                return false;
+            }
+            return true;
+        });
+
+        if (cooledDownList.length > 0) {
+            const cdMsg = `[AI MarketEvaluator][${botId}] ❄️ Cooldown Filter: Excluded ${cooledDownList.length} strategies: ${cooledDownList.join(', ')}`;
+            if (logger) logger.addLog(cdMsg);
+            console.log(cdMsg);
+        }
+
+        if (!candidateStrategies.length) {
+            candidateStrategies = eligibleStrategies;
+        }
+
+        // 3. Prepare Multi-Timeframe candle map
         const candleMap = new Map<string, Candle[]>();
         candleMap.set(normalizeTimeframe(baseTf), candles);
         if (tf15mCandles && tf15mCandles.length) {
@@ -379,42 +411,86 @@ export async function evaluateAndApplyAiStrategy(
             candleMap.set('240', tf4hCandles);
         }
 
-        backtestResults = Backtester.runMany(eligibleStrategies, candleMap, { baseTimeframe: baseTf });
-        const compactBt = backtestResults.map((r, i) => {
-            if (r.status === 'no_triggers') {
-                return `${i + 1}.${r.strategyId}:STATUS=NO_TRIGGERS(0 Trades)`;
+        // Phase 1: Robustness Gating via AIRobustnessScorer (Monte Carlo + Walk-Forward Analysis)
+        interface ScoredCandidate {
+            strategy: PineStrategyDefinition;
+            report: ComprehensiveRobustnessReport;
+            passedHurdle: boolean;
+        }
+
+        const scoredCandidates: ScoredCandidate[] = [];
+
+        for (const strat of candidateStrategies) {
+            try {
+                const report = AIRobustnessScorer.evaluate(strat, candleMap, {
+                    baseTimeframe: baseTf,
+                    symbol,
+                });
+
+                // Hurdle checks:
+                // 1. Not overfitted (verdict !== 'OVERFIT_RISK' && !isOverfit)
+                // 2. Monte Carlo ruin probability <= 5%
+                // 3. Deployable or acceptable sample in recent window
+                const isRuinAcceptable = (report.monteCarloSimulation?.probabilityOfRuinPercent ?? 0) <= 5;
+                const notOverfit = report.verdict !== 'OVERFIT_RISK' && !report.splitAnalysis?.isOverfit;
+                const isDeployable = report.isCurrentlyDeployable || (report.verdict === 'INSUFFICIENT_SAMPLE' && report.fullBacktest?.status !== 'losing');
+
+                const passedHurdle = notOverfit && isRuinAcceptable && isDeployable;
+
+                scoredCandidates.push({
+                    strategy: strat,
+                    report,
+                    passedHurdle,
+                });
+            } catch (err: any) {
+                console.warn(`[AIRobustnessScorer] Strategy ${strat.id} evaluation skipped:`, err?.message);
             }
-            if (r.status === 'insufficient_sample') {
-                return `${i + 1}.${r.strategyId}:STATUS=INSUFFICIENT_SAMPLE(Trades=${r.totalTrades},WR=${r.winRate}%,PF=${r.profitFactor})`;
-            }
-            return `${i + 1}.${r.strategyId}:WR=${r.winRate}%,PF=${r.profitFactor},Trades=${r.totalTrades},PnL=${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent}%`;
-        }).join(' | ');
+        }
 
-        const topBt = backtestResults[0];
-        const topBtSummary = topBt?.status === 'profitable'
-            ? `Top Strategy: "${topBt.strategyName}" (NetPnL: ${topBt.netPnlPercent > 0 ? '+' : ''}${topBt.netPnlPercent}%, WR: ${topBt.winRate}%, PF: ${topBt.profitFactor})`
-            : `Top Strategy by Regime: "${topBt?.strategyName}" (Window Status: ${topBt?.status?.toUpperCase()})`;
+        // Rank by passedHurdle first, then deploymentScore descending
+        scoredCandidates.sort((a, b) => {
+            if (a.passedHurdle && !b.passedHurdle) return -1;
+            if (!a.passedHurdle && b.passedHurdle) return 1;
+            return b.report.deploymentScore - a.report.deploymentScore;
+        });
 
-        const btSummary = `[AI MarketEvaluator][${botId}] Detected Regime: "${detectedRegime}" | Gated Candidates: ${eligibleStrategies.length} | ${topBtSummary}`;
-        if (logger) logger.addLog(btSummary);
-        console.log(btSummary);
+        const passedCandidates = scoredCandidates.filter(c => c.passedHurdle);
 
-        const btHeader = `[AI MarketEvaluator][${botId}] 📊 Live Backtest Simulation (${eligibleStrategies.length} candidates on ${symbol}):`;
-        if (logger) logger.addLog(btHeader);
-        console.log(btHeader);
+        const robustnessSummaryHeader = `[AI MarketEvaluator][${botId}] 🛡️ AIRobustnessScorer (Walk-Forward + Monte Carlo) Evaluation: ${passedCandidates.length}/${scoredCandidates.length} passed`;
+        if (logger) logger.addLog(robustnessSummaryHeader);
+        console.log(robustnessSummaryHeader);
 
-        backtestResults.forEach((r, idx) => {
-            const wrStr = r.totalTrades > 0 ? `${r.winRate.toFixed(1)}%` : 'N/A';
-            const pfStr = r.totalTrades > 0 ? r.profitFactor.toFixed(2) : 'N/A';
-            const pnlStr = r.totalTrades > 0 ? `${r.netPnlPercent > 0 ? '+' : ''}${r.netPnlPercent.toFixed(2)}%` : '0.00%';
-            const statusTag = r.totalTrades > 0 ? r.status.toUpperCase() : 'NO_TRIGGERS';
-            const row = `  #${idx + 1} [${statusTag.padEnd(12)}] ${r.strategyId.padEnd(28)} | Trades: ${r.totalTrades} (W:${r.wins}/L:${r.losses}) | WinRate: ${wrStr.padEnd(5)} | PF: ${pfStr.padEnd(4)} | NetPnL: ${pnlStr} | MaxDD: ${r.maxDrawdownPercent}%`;
+        scoredCandidates.forEach((c, idx) => {
+            const r = c.report;
+            const mcDd = r.monteCarloSimulation?.p95MaxDrawdownPercent?.toFixed(1) ?? '0.0';
+            const wfGen = r.splitAnalysis?.generalizationScore?.toFixed(0) ?? '0';
+            const ruin = r.monteCarloSimulation?.probabilityOfRuinPercent?.toFixed(1) ?? '0.0';
+            const row = `  #${idx + 1} [${c.passedHurdle ? 'PASSED' : 'REJECTED'}] ${c.strategy.id.padEnd(28)} | Score: ${String(r.deploymentScore).padStart(3)}/100 | Verdict: ${r.verdict.padEnd(19)} | WFA Gen: ${wfGen}% | MC 95% MaxDD: ${mcDd}% | Ruin: ${ruin}%`;
             if (logger) logger.addLog(row);
             console.log(row);
         });
 
-        // Direct Gemini API call with regime-gated candidates
-        if (env.geminiApiKey) {
+        // If ZERO strategies passed the Monte Carlo / Walk-Forward robustness hurdles, trigger STAND ASIDE immediately!
+        if (passedCandidates.length === 0) {
+            const noStratMsg = `[AI MarketEvaluator][${botId}] ⏸️ Zero strategies passed Monte Carlo / Walk-Forward robustness stress tests for ${symbol}. Emitting STAND ASIDE (NO TRADE).`;
+            if (logger) logger.addLog(noStratMsg);
+            console.log(noStratMsg);
+
+            aiResult = {
+                marketCondition: detectedRegime,
+                confidence: 'low',
+                selectedStrategyId: 'stand_aside',
+                strategyName: 'Stand Aside (No Robust Strategy)',
+                reasoning: `Zero strategies satisfied Walk-Forward consistency and Monte Carlo ruin limits (<5%) in current regime (${detectedRegime}). Standing aside to protect capital.`,
+                recommendedTimeframe: bot.TIMEFRAME || '5m',
+                recommendedTp: 0,
+                recommendedSl: 0,
+                standAside: true,
+            };
+        }
+
+        // Direct Gemini AI call with verified robust candidates
+        if (!aiResult && env.geminiApiKey) {
             const aiStartTime = Date.now();
             let systemPrompt = '';
             let userPrompt = '';
@@ -422,32 +498,53 @@ export async function evaluateAndApplyAiStrategy(
             let aiErrorMsg: string | undefined;
 
             try {
-                const catalogSnippet = eligibleStrategies.map((s: PineStrategyDefinition, idx: number) => `${idx + 1}:${s.id}(${s.name})`).join('\n');
+                const topCandidates = passedCandidates.slice(0, 5);
+                const catalogSnippet = topCandidates.map((c, idx) => {
+                    const r = c.report;
+                    const mcDd = r.monteCarloSimulation?.p95MaxDrawdownPercent?.toFixed(1) ?? '0.0';
+                    const wfGen = r.splitAnalysis?.generalizationScore?.toFixed(0) ?? '0';
+                    return `${idx + 1}: ${c.strategy.id} (${c.strategy.name}) | Score: ${r.deploymentScore}/100 [${r.verdict}] | WFA Gen: ${wfGen}% | MC 95% MaxDD: ${mcDd}% | Predefined TP: ${c.strategy.defaultTpPercent}%, SL: ${c.strategy.defaultSlPercent}%`;
+                }).join('\n');
 
                 systemPrompt = `You are BreakoutEx Quant Regime & Strategy Deductor.
 Detected Regime: ${detectedRegime}.
-Task: Select the single best strategy ID from the Gated Catalog for user mode (${bot.MODE}).
-Gated Catalog:
+Task: Select either the single best strategy ID from the Robust Vetted Catalog for user mode (${bot.MODE}), OR output "NO_TRADE" to stand aside.
+All strategies in the catalog have PASSED Walk-Forward & Monte Carlo stress tests.
+TP and SL are fixed and governed strictly by the predefined strategy definition.
+
+Robust Vetted Catalog:
 ${catalogSnippet}
 
-Rules:
+Decision Rules:
 1. regime MUST be one of: ["trending_bullish","trending_bearish","ranging_choppy","high_volatility_breakout","low_volatility_consolidation"].
-2. strat MUST be a valid ID from the Gated Catalog.
-   - If candidate strategies have positive backtest metrics (WR>=50%, PF>=1.2), prioritize them based on statistical edge.
-   - If all candidates have Trades=0 (no triggers in recent window), select the strategy with the best architectural fit for the current market regime and volatility structure (e.g. Volatility Squeeze or Range Expansion during compression). Do NOT claim empirical backtest edge when trades=0.
-3. tp/sl: Dynamic % calibrated to ATR ensuring (tp/sl) >= ${Math.max(1.0, bot.MIN_RR || 1.5)}.
-4. conf: "H"|"M"|"L". When backtest has zero triggers, cap confidence at "M". Set stand: true if market is unreadable/whipsaw.
+2. strat MUST be either:
+   - Exactly ONE valid ID from the Robust Vetted Catalog, OR
+   - "NO_TRADE" if market conditions are unfavorable, choppy, or multi-timeframe trends conflict.
+3. STAND ASIDE (NO_TRADE) Criteria:
+   - If market is in directionless chop/ranging without a clear edge, set "strat":"NO_TRADE", "stand":true, "conf":"L" or "M".
+   - If HTF trends conflict with LTF momentum (e.g. 4H Bearish vs 5M Bullish), set "strat":"NO_TRADE", "stand":true.
+   - Standing aside to protect capital is considered a successful, winning quant decision. Do NOT force a strategy when confidence is low.
+4. If a valid strategy IS chosen:
+   - strat MUST be strictly from the Robust Vetted Catalog.
+   - conf: "H"|"M"|"L".
 5. why: 1 concise sentence explaining the regime and structural rationale.
 
 Output strict single-line JSON:
-{"regime":"${detectedRegime}","strat":"${eligibleStrategies[0].id}","tf":"5m","tp":2.5,"sl":1.0,"conf":"M","stand":false,"why":"Selected based on regime fit and volatility structure"}`;
+{"regime":"${detectedRegime}","strat":"${topCandidates[0].strategy.id}","tf":"5m","conf":"M","stand":false,"why":"Selected based on Walk-Forward robustness and regime alignment"}
+OR if standing aside:
+{"regime":"ranging_choppy","strat":"NO_TRADE","tf":"5m","conf":"L","stand":true,"why":"Choppy consolidation with no clear statistical edge; standing aside to protect capital"}`;
+
+                const compactBt = topCandidates.map((c, i) => {
+                    const r = c.report;
+                    return `${i + 1}.${c.strategy.id}:Score=${r.deploymentScore}/100[${r.verdict}],OOS=${r.splitAnalysis?.generalizationScore?.toFixed(0)}%,MC_DD=${r.monteCarloSimulation?.p95MaxDrawdownPercent?.toFixed(1)}%`;
+                }).join(' | ');
 
                 userPrompt = `PAIR:${symbol}|MODE:${bot.MODE.toUpperCase()}|MIN_RR:${bot.MIN_RR || 1.5}|REGIME:${detectedRegime}
 5M:P=$${snapshot.currentPrice}|24h=${snapshot.change24h}%|RSI=${snapshot.rsi}|EMA=${snapshot.emaTrend}|ADX=${snapshot.adx}(+DI:${snapshot.diPlus},-DI:${snapshot.diMinus})|ATR=${snapshot.atrPercent}%|BBW=${snapshot.bbWidth}(Sq:${snapshot.isBbSqueeze ? 1 : 0})|Vol=${snapshot.volumeRatio}x
 15M:Trend=${snapshot.htf15mTrend}|RSI=${snapshot.htf15mRsi}
 1H:Trend=${snapshot.htf1hTrend}|RSI=${snapshot.htf1hRsi}
 4H:MacroTrend=${snapshot.htf4hTrend}
-BT:${compactBt}`;
+ROBUST_CANDIDATES:${compactBt}`;
 
                 const promptLogMsg = `[AI MarketEvaluator][${botId}] 🤖 Sending market context to Gemini AI (${env.geminiModel}):\n${userPrompt}`;
                 if (logger) logger.addLog(promptLogMsg);
@@ -487,7 +584,15 @@ BT:${compactBt}`;
                     json = json[0];
                 }
 
-                const stratId = json.strat || json.selectedStrategyId;
+                const rawStratId = String(json.strat || json.selectedStrategyId || '').trim();
+                const isExplicitStandAside = Boolean(
+                    json.stand ||
+                    json.standAside ||
+                    rawStratId.toUpperCase() === 'NO_TRADE' ||
+                    rawStratId.toLowerCase() === 'stand_aside' ||
+                    rawStratId.toLowerCase() === 'none'
+                );
+
                 const validStrategyIds = Object.keys(STRATEGY_LIBRARY);
                 const validConditions = [
                     'trending_bullish',
@@ -496,37 +601,64 @@ BT:${compactBt}`;
                     'high_volatility_breakout',
                     'low_volatility_consolidation',
                 ];
+                const rawRegime = json.regime || json.marketCondition || detectedRegime;
+                const normalizedRegime = validConditions.includes(rawRegime) ? rawRegime : detectedRegime;
+                const rawConf = String(json.conf || json.confidence || 'M').toUpperCase();
+                const mappedConf = rawConf.startsWith('H') ? 'high' : rawConf.startsWith('M') ? 'medium' : 'low';
 
-                if (stratId && validStrategyIds.includes(stratId)) {
-                    const stratDef = getStrategyById(stratId)!;
-                    const rawRegime = json.regime || json.marketCondition || detectedRegime;
-                    const rawConf = String(json.conf || json.confidence || 'H').toUpperCase();
-                    const mappedConf = rawConf.startsWith('H') ? 'high' : rawConf.startsWith('M') ? 'medium' : 'low';
-
+                if (isExplicitStandAside) {
                     aiResult = {
-                        marketCondition: validConditions.includes(rawRegime) ? rawRegime : detectedRegime,
+                        marketCondition: normalizedRegime,
                         confidence: mappedConf as 'high' | 'medium' | 'low',
-                        selectedStrategyId: stratId,
+                        selectedStrategyId: 'stand_aside',
+                        strategyName: 'Stand Aside (No Trade Signal)',
+                        reasoning: String(json.why || json.reasoning || 'AI recommended standing aside: no clear statistical edge in current market regime.'),
+                        recommendedTimeframe: bot.TIMEFRAME || '5m',
+                        recommendedTp: 0,
+                        recommendedSl: 0,
+                        standAside: true,
+                    };
+                } else if (rawStratId && validStrategyIds.includes(rawStratId)) {
+                    const stratDef = getStrategyById(rawStratId)!;
+                    aiResult = {
+                        marketCondition: normalizedRegime,
+                        confidence: mappedConf as 'high' | 'medium' | 'low',
+                        selectedStrategyId: rawStratId,
                         strategyName: stratDef.name,
                         reasoning: String(json.why || json.reasoning || `Selected ${stratDef.name} via quantitative deduction.`),
-                        recommendedTimeframe: json.tf || json.recommendedTimeframe || stratDef.recommendedTimeframe,
-                        recommendedTp: Math.max(0.4, Math.min(Number(json.tp || json.recommendedTp) || stratDef.defaultTpPercent, 10.0)),
-                        recommendedSl: Math.max(0.2, Math.min(Number(json.sl || json.recommendedSl) || stratDef.defaultSlPercent, 5.0)),
-                        standAside: Boolean(json.stand || json.standAside),
+                        recommendedTimeframe: stratDef.recommendedTimeframe || bot.TIMEFRAME || '5m',
+                        recommendedTp: stratDef.defaultTpPercent,
+                        recommendedSl: stratDef.defaultSlPercent,
+                        standAside: false,
                     };
-
-                    // Populate Global Cache for subsequent bots/cycles
-                    globalRegimeCache.set(cacheKey, {
-                        evaluatedAt: Date.now(),
-                        expiresAt: Date.now() + TWO_HOURS_MS,
-                        response: aiResult,
-                        baselinePrice: snapshot.currentPrice,
-                        baselineAtr: snapshot.atr,
-                        baselineEmaTrend: snapshot.emaTrend,
-                        baselineAdx: snapshot.adx,
-                        baselineTrendStrength: snapshot.trendStrength,
-                    });
+                } else {
+                    // LLM returned unknown or invalid strategy ID - NEVER randomly guess or force a trade!
+                    const invalidMsg = `AI suggested unrecognized strategy "${rawStratId}". Defaulting safely to STAND ASIDE (NO TRADE).`;
+                    console.warn(`[AI MarketEvaluator][${botId}] ${invalidMsg}`);
+                    aiResult = {
+                        marketCondition: normalizedRegime,
+                        confidence: 'low',
+                        selectedStrategyId: 'stand_aside',
+                        strategyName: 'Stand Aside (Unrecognized Strategy)',
+                        reasoning: invalidMsg,
+                        recommendedTimeframe: bot.TIMEFRAME || '5m',
+                        recommendedTp: 0,
+                        recommendedSl: 0,
+                        standAside: true,
+                    };
                 }
+
+                // Populate Global Cache for subsequent bots/cycles
+                globalRegimeCache.set(cacheKey, {
+                    evaluatedAt: Date.now(),
+                    expiresAt: Date.now() + TWO_HOURS_MS,
+                    response: aiResult,
+                    baselinePrice: snapshot.currentPrice,
+                    baselineAtr: snapshot.atr,
+                    baselineEmaTrend: snapshot.emaTrend,
+                    baselineAdx: snapshot.adx,
+                    baselineTrendStrength: snapshot.trendStrength,
+                });
 
                 // Log full AI input, prompts, and response directly into the bot cycle logger
                 if (logger) {
@@ -578,25 +710,56 @@ BT:${compactBt}`;
             fallbackCond = 'trending_bearish';
         }
 
-        // Promote top backtest performer from candidate pool
-        let fallbackId = backtestResults[0]?.strategyId;
-        if (!fallbackId) {
-            const pool = getStrategiesForMarketCondition(fallbackCond);
-            fallbackId = pool[0]?.id || 'mtf_trend_continuation';
-        }
+        // Quant Edge Check: If market is in dead chop / low ADX with no squeeze, do NOT force a trade!
+        const isUnfavorableChop = (fallbackCond === 'ranging_choppy' || snapshot.trendStrength === 'ranging_chop') && snapshot.adx < 22 && !snapshot.isBbSqueeze;
 
-        const stratDef = getStrategyById(fallbackId) || STRATEGY_LIBRARY.mtf_trend_continuation;
-        aiResult = {
-            marketCondition: fallbackCond,
-            confidence: 'medium',
-            selectedStrategyId: stratDef.id,
-            strategyName: stratDef.name,
-            reasoning: `Empirical quant fallback selection: ${stratDef.name} (ADX=${snapshot.adx} [${snapshot.trendStrength}], RSI=${snapshot.rsi}, ATR=${snapshot.atrPercent}%, 1hTrend=${snapshot.htf1hTrend}).`,
-            recommendedTimeframe: stratDef.recommendedTimeframe,
-            recommendedTp: stratDef.defaultTpPercent,
-            recommendedSl: stratDef.defaultSlPercent,
-            standAside: false,
-        };
+        if (isUnfavorableChop) {
+            aiResult = {
+                marketCondition: fallbackCond,
+                confidence: 'low',
+                selectedStrategyId: 'stand_aside',
+                strategyName: 'Stand Aside (No Trade Signal)',
+                reasoning: `Quantitative fallback: Market in choppy consolidation with low directional momentum (ADX=${snapshot.adx.toFixed(1)}, BBW=${(snapshot.bbWidth * 100).toFixed(2)}%). Standing aside to protect capital.`,
+                recommendedTimeframe: bot.TIMEFRAME || '5m',
+                recommendedTp: 0,
+                recommendedSl: 0,
+                standAside: true,
+            };
+        } else {
+            // Promote top backtest performer from candidate pool only if an edge exists
+            let fallbackId = backtestResults.find(r => r.status === 'profitable')?.strategyId;
+            if (!fallbackId) {
+                const pool = getStrategiesForMarketCondition(fallbackCond);
+                fallbackId = pool[0]?.id;
+            }
+
+            if (fallbackId && getStrategyById(fallbackId)) {
+                const stratDef = getStrategyById(fallbackId)!;
+                aiResult = {
+                    marketCondition: fallbackCond,
+                    confidence: 'medium',
+                    selectedStrategyId: stratDef.id,
+                    strategyName: stratDef.name,
+                    reasoning: `Empirical quant fallback selection: ${stratDef.name} (ADX=${snapshot.adx} [${snapshot.trendStrength}], RSI=${snapshot.rsi}, ATR=${snapshot.atrPercent}%, 1hTrend=${snapshot.htf1hTrend}).`,
+                    recommendedTimeframe: stratDef.recommendedTimeframe,
+                    recommendedTp: stratDef.defaultTpPercent,
+                    recommendedSl: stratDef.defaultSlPercent,
+                    standAside: false,
+                };
+            } else {
+                aiResult = {
+                    marketCondition: fallbackCond,
+                    confidence: 'low',
+                    selectedStrategyId: 'stand_aside',
+                    strategyName: 'Stand Aside (No Strategy Matched)',
+                    reasoning: `No strategy in the predefined catalog met the minimum regime fit. Standing aside.`,
+                    recommendedTimeframe: bot.TIMEFRAME || '5m',
+                    recommendedTp: 0,
+                    recommendedSl: 0,
+                    standAside: true,
+                };
+            }
+        }
     }
 
 
@@ -646,11 +809,11 @@ BT:${compactBt}`;
         return;
     }
 
-    // Apply to in-memory bot runtime configuration
+    // Apply to in-memory bot runtime configuration (Phase 2: TP & SL strictly from predefined strategy)
     bot.PINE_SCRIPT = selectedStrat.pineScript;
-    bot.TIMEFRAME = aiResult.recommendedTimeframe || selectedStrat.recommendedTimeframe;
-    bot.TP_PERCENT = aiResult.recommendedTp || selectedStrat.defaultTpPercent;
-    bot.SL_PERCENT = aiResult.recommendedSl || selectedStrat.defaultSlPercent;
+    bot.TIMEFRAME = selectedStrat.recommendedTimeframe || bot.TIMEFRAME || '5m';
+    bot.TP_PERCENT = selectedStrat.defaultTpPercent;
+    bot.SL_PERCENT = selectedStrat.defaultSlPercent;
     bot.CURRENT_STRATEGY_ID = selectedStrat.id;
     bot.CURRENT_STRATEGY_NAME = selectedStrat.name;
     bot.MARKET_CONDITION = aiResult.marketCondition;

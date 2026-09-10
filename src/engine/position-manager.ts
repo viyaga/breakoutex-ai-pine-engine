@@ -6,28 +6,57 @@
 import { IExchangeClient } from '../exchange/exchange.interface';
 import { PineTradeState, IPineTradeState, PineBotError } from '../models/tradeState.model';
 import { PineBotConfig } from '../config/types';
+import { StrategyPerformanceTracker } from './strategy-performance-tracker';
 
 function log(botId: string, msg: string) {
     console.log(`[PineEngine][${botId}] ${msg}`);
 }
 
-/** Sync leverage on the exchange, safely handles errors */
+// ── Verified Leverage Cache ───────────────────────────────────────
+// In-memory cache of verified bot leverage per symbol/product to avoid redundant REST calls every minute
+const verifiedLeverageCache = new Map<string, number>();
+
+export function invalidateLeverageCache(botId?: string): void {
+    if (!botId) {
+        verifiedLeverageCache.clear();
+        console.log('[PositionManager] Verified leverage cache cleared.');
+        return;
+    }
+    for (const key of verifiedLeverageCache.keys()) {
+        if (key.startsWith(`${botId}:`)) {
+            verifiedLeverageCache.delete(key);
+        }
+    }
+}
+
+/** Sync leverage on the exchange, safely handles errors with in-memory caching */
 export async function syncLeverage(
     client: IExchangeClient,
     c: PineBotConfig,
     logger?: { addLog: (msg: string) => void; warn: (msg: string) => void }
 ): Promise<void> {
+    const prodIdentifier = c.PRODUCT_ID || c.SYMBOL;
+    const cacheKey = `${c.id}:${c.SYMBOL}:${prodIdentifier}`;
+
+    // Skip redundant exchange REST call if already verified at this target leverage
+    if (verifiedLeverageCache.get(cacheKey) === c.LEVERAGE) {
+        const cachedInfo = `[Exchange API] ⚡ Leverage verified from memory cache: ${c.LEVERAGE}x for ${c.SYMBOL}`;
+        if (logger) logger.addLog(cachedInfo);
+        return;
+    }
+
     try {
-        const prodIdentifier = c.PRODUCT_ID || c.SYMBOL;
         const reqInfo = `[Exchange API] ➔ Request: setLeverage | Symbol: ${c.SYMBOL} (ID: ${prodIdentifier}) | Target Leverage: ${c.LEVERAGE}x`;
         if (logger) logger.addLog(reqInfo);
 
         await client.setLeverage(prodIdentifier, c.LEVERAGE, c.SYMBOL);
-        
+        verifiedLeverageCache.set(cacheKey, c.LEVERAGE);
+
         const resInfo = `[Exchange API] ⬅ Response: setLeverage | Status: SUCCESS | Leverage verified: ${c.LEVERAGE}x`;
         if (logger) logger.addLog(resInfo);
         log(c.id, resInfo);
     } catch (err: any) {
+        verifiedLeverageCache.delete(cacheKey);
         const warnMsg = `[Exchange API] ⬅ Response: setLeverage failed (non-fatal): ${err.message}`;
         if (logger) logger.warn(warnMsg);
         else console.warn(`[PineEngine][${c.id}] ${warnMsg}`);
@@ -81,6 +110,7 @@ export async function handleOpenTrade(
             status: 'closed',
             exitPrice: null,
         });
+        PineStateTracker.invalidate(botId);
         return { state, isStillOpen: false };
     }
 
@@ -186,6 +216,10 @@ export async function handleOpenTrade(
         allTimeFees: (state.allTimeFees ?? 0) + fees,
         lastTradeSettledAt: now,
     });
+    PineStateTracker.invalidate(c.id);
+
+    // Record trade outcome to performance memory & enforce cooldown if consecutive stop-outs occur
+    StrategyPerformanceTracker.recordTradeOutcome(c.SYMBOL, c.CURRENT_STRATEGY_ID || '', outcome, netPnl);
 
     // Push PnL update to Payload
     await syncPnlToPayload(c.id, newAllTimePnl, outcome, logger);
@@ -224,10 +258,59 @@ async function syncPnlToPayload(botId: string, allTimePnl: number, outcome: 'win
     }
 }
 
-/** Get or create an open trade state for the bot */
+// ── In-Memory Trade State Tracker ─────────────────────────────────
+// Eliminates repetitive MongoDB findOne queries every minute during idle periods
+export class PineStateTracker {
+    private static cachedStates = new Map<string, IPineTradeState>();
+
+    public static getState(botId: string): IPineTradeState | undefined {
+        return this.cachedStates.get(botId);
+    }
+
+    public static setState(botId: string, state: IPineTradeState): void {
+        this.cachedStates.set(botId, state);
+    }
+
+    public static invalidate(botId?: string): void {
+        if (!botId) {
+            this.cachedStates.clear();
+            console.log('[PineStateTracker] All cached bot states invalidated.');
+        } else {
+            this.cachedStates.delete(botId);
+        }
+    }
+
+    public static hasPendingTrade(botId: string): boolean {
+        const st = this.cachedStates.get(botId);
+        return Boolean(st && st.status === 'open' && st.tradeOutcome === 'pending');
+    }
+}
+
+/** Get or create an open trade state for the bot with smart in-memory caching */
 export async function getOrCreateState(c: PineBotConfig): Promise<IPineTradeState> {
+    const cached = PineStateTracker.getState(c.id);
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    // If cached state exists AND it belongs to the same UTC day, serve from cache instantly (0 DB queries)
+    if (cached) {
+        const cachedDay = cached.updatedAt ? new Date(cached.updatedAt).toISOString().slice(0, 10) : todayStr;
+        if (cachedDay === todayStr) {
+            return cached;
+        }
+    }
+
     let state = await PineTradeState.findOne({ botId: c.id, status: 'open' });
-    if (state) return state;
+    if (state) {
+        // Daily PnL reset check on UTC day rollover
+        const now = new Date();
+        const isSameDay = state.updatedAt && isSameUtcDay(state.updatedAt, now);
+        if (!isSameDay && state.tradeOutcome !== 'pending') {
+            state.dailyPnl = 0;
+            await (state as any).save();
+        }
+        PineStateTracker.setState(c.id, state);
+        return state;
+    }
 
     // Get last closed state to inherit lifetime stats
     const last = await PineTradeState.findOne({ botId: c.id, status: 'closed' }).sort({ updatedAt: -1 });
@@ -252,6 +335,7 @@ export async function getOrCreateState(c: PineBotConfig): Promise<IPineTradeStat
         cumulativeFees:    0,
     });
 
+    PineStateTracker.setState(c.id, state);
     return state;
 }
 

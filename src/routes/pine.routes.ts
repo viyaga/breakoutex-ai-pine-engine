@@ -5,56 +5,95 @@
 
 import { Router, Request, Response } from 'express';
 import { runPineCycle, clearCycleCache } from '../engine/index';
-import { fetchActivePineBots } from '../engine/config-fetcher';
+import { fetchActivePineBots, invalidateConfigCache } from '../engine/config-fetcher';
 import { evaluatePineScript } from '../interpreter';
 import { Backtester, getAllStrategies, getStrategyById } from '../backtesting';
 import { PineBotConfig } from '../config/types';
 import env from '../config/env';
-import { startCycleLogging, endCycleLogging } from '../utils/cycle-logger';
+import { startCycleLogging, endCycleLogging, tradingCronLogger } from '../utils/cycle-logger';
 
 const router = Router();
 
 /**
+ * POST /api/pine/refresh-configs
+ * Manually invalidates bot config cache so fresh configs are loaded immediately
+ */
+router.post('/refresh-configs', async (_req: Request, res: Response) => {
+    invalidateConfigCache();
+    const bots = await fetchActivePineBots();
+    return void res.json({
+        success: true,
+        message: 'Bot config cache invalidated and refreshed successfully',
+        count: bots.length,
+        timestamp: new Date().toISOString(),
+    });
+});
+
+/**
  * POST /api/pine/trigger
- * Body: { botId?: string }  — omit botId to trigger all bots
+ * Body: { botId?: string, refreshConfigs?: boolean }
+ * Runs a trading cycle immediately.
  */
 router.post('/trigger', async (req: Request, res: Response) => {
-    const { botId } = req.body as { botId?: string };
+    const { botId, refreshConfigs } = req.body as { botId?: string; refreshConfigs?: boolean };
     const ts = new Date().toISOString();
+    const cycleStart = Date.now();
 
     startCycleLogging();
-    console.log(`\n${'─'.repeat(60)}`);
-    console.log(`[Manual Trigger] ▶ CYCLE START  ${ts}${botId ? ` (Bot: ${botId})` : ' (All Bots)'}`);
-    console.log(`${'─'.repeat(60)}`);
+    tradingCronLogger.info('='.repeat(80));
+    tradingCronLogger.info(`[TradingCron] ========== MANUAL CYCLE START (${botId ? `Bot: ${botId}` : 'All Bots'}) ==========`);
+    tradingCronLogger.info('='.repeat(80));
 
     try {
         clearCycleCache();
+        tradingCronLogger.debug('[TradingV2] Market data caches cleared');
+
+        if (refreshConfigs) {
+            invalidateConfigCache();
+            tradingCronLogger.info('[TradingCron] Configuration cache invalidated');
+        }
         const allBots = await fetchActivePineBots();
         const bots    = botId ? allBots.filter(b => b.id === botId) : allBots;
 
         if (!bots.length) {
-            console.log('[Manual Trigger] No matching active Pine bots found');
+            tradingCronLogger.info('[TradingCron] No matching active Pine bots found');
             return void res.status(404).json({ success: false, message: 'No matching active Pine bots found', ts });
         }
+
+        tradingCronLogger.info(`[TradingCron] Processing batch of ${bots.length} configs...`);
 
         // Run concurrently
         const results = await Promise.allSettled(bots.map(b => runPineCycle(b)));
 
-        const summary = results.map((r, i) => ({
-            botId:  bots[i].id,
-            symbol: bots[i].SYMBOL,
-            status: r.status,
-            reason: r.status === 'rejected' ? String((r as any).reason) : undefined,
-        }));
+        let succeeded = 0;
+        let failed = 0;
+
+        const summary = results.map((r, i) => {
+            if (r.status === 'fulfilled') {
+                succeeded++;
+            } else {
+                failed++;
+            }
+            return {
+                botId:  bots[i].id,
+                symbol: bots[i].SYMBOL,
+                status: r.status,
+                reason: r.status === 'rejected' ? String((r as any).reason) : undefined,
+            };
+        });
+
+        tradingCronLogger.info(`[TradingCron] Batch summary: ${bots.length} configs, ${succeeded} succeeded, ${failed} failed`);
 
         return void res.json({ success: true, ts, triggered: bots.length, summary });
     } catch (err: any) {
-        console.error('[Manual Trigger] Error executing cycle:', err);
+        tradingCronLogger.error('[TradingCron] Error executing cycle:', { error: err?.message ?? err });
         return void res.status(500).json({ success: false, message: err.message, ts });
     } finally {
-        console.log(`${'─'.repeat(60)}`);
-        console.log(`[Manual Trigger] ■ CYCLE DONE  ${new Date().toISOString()}`);
-        console.log(`${'─'.repeat(60)}\n`);
+        const duration = Date.now() - cycleStart;
+        tradingCronLogger.info('='.repeat(80));
+        tradingCronLogger.info('[TradingCron] ========== MANUAL CYCLE COMPLETE ==========');
+        tradingCronLogger.info(`[TradingCron] Duration: ${duration}ms (${(duration / 1000).toFixed(2)}s)`);
+        tradingCronLogger.info('='.repeat(80));
         endCycleLogging();
     }
 });
