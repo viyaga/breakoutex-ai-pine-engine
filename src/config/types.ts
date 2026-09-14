@@ -51,6 +51,17 @@ export interface PineBotConfig {
     AI_REASONING?: string;
     LAST_AI_EVALUATION?: string;
     NEXT_AI_EVALUATION?: string;
+
+    // Multi-Market & Indian Stock Options (Zerodha / Angel One)
+    MARKET_TYPE?: 'crypto' | 'indian_stock';
+    CURRENCY?: 'USD' | 'INR';
+    OPTION_STRIKE_PREFERENCE?: 'ATM' | 'ITM1' | 'ITM2' | 'OTM1';
+    OPTION_EXPIRY_PREFERENCE?: 'NEAREST_WEEKLY' | 'NEXT_WEEKLY' | 'MONTHLY';
+    OPTION_DIRECTION_MODE?: 'AI_DIRECTIONAL' | 'CE_ONLY' | 'PE_ONLY';
+    LOTS_COUNT?: number;
+    CLIENT_CODE?: string;
+    MPIN?: string;
+    TOTP_SECRET?: string;
 }
 
 /** OHLCV candle */
@@ -130,4 +141,15 @@ export interface RawActiveBot {
     AI_REASONING?: string;
     LAST_AI_EVALUATION?: string;
     NEXT_AI_EVALUATION?: string;
+
+    // Multi-Market & Indian Stock Options
+    MARKET_TYPE?: 'crypto' | 'indian_stock';
+    CURRENCY?: 'USD' | 'INR';
+    OPTION_STRIKE_PREFERENCE?: 'ATM' | 'ITM1' | 'ITM2' | 'OTM1';
+    OPTION_EXPIRY_PREFERENCE?: 'NEAREST_WEEKLY' | 'NEXT_WEEKLY' | 'MONTHLY';
+    OPTION_DIRECTION_MODE?: 'AI_DIRECTIONAL' | 'CE_ONLY' | 'PE_ONLY';
+    LOTS_COUNT?: number;
+    CLIENT_CODE?: string;
+    MPIN?: string;
+    TOTP_SECRET?: string;
 }

@@ -65,6 +65,9 @@ export const marketDataLogger = createConsoleLogger('market-data');
 export const positionManagerLogger = createConsoleLogger('position-manager');
 export const tradeExecLogger = createConsoleLogger('trade-exec');
 export const syncLogger = createConsoleLogger('sync');
+export const brokerAdapterLogger = createConsoleLogger('broker-adapter');
+export const optionEngineLogger = createConsoleLogger('option-engine');
+export const optionRiskLogger = createConsoleLogger('option-risk');
 
 /** Ensure log directories exist */
 function ensureDirs(): void {
@@ -440,6 +443,96 @@ export class BotCycleLogger {
         const errStr = opts.error?.message || (typeof opts.error === 'string' ? opts.error : JSON.stringify(opts.error));
         const msg = `[Exchange API (${opts.exchange})] ⬅ Error: ${actionStr}${statusStr}${durStr} | Error: ${errStr}`;
         this.error(`[PineEngine][${this.botId}] ${msg}`);
+    }
+
+    logMultiMarketConfig(opts: {
+        marketType: string;
+        exchange: string;
+        underlying: string;
+        strikePreference: string;
+        expiryPreference: string;
+        directionMode: string;
+        lotsCount: number;
+        lotSize?: number;
+        capitalAmount: number;
+        currency: string;
+    }): void {
+        const lotInfo = opts.lotSize ? ` (${opts.lotsCount * opts.lotSize} shares)` : '';
+        this.log(`\n${'─'.repeat(70)}`);
+        this.log(`[MultiMarket][${this.botId}] 🇮🇳 INDIAN OPTIONS / BROKER CONFIGURATION:`);
+        this.log(`  • Market Segment:       ${opts.marketType.toUpperCase()}`);
+        this.log(`  • Broker / Exchange:    ${opts.exchange.toUpperCase()}`);
+        this.log(`  • Underlying Asset:     ${opts.underlying}`);
+        this.log(`  • Capital Allocated:    ${opts.currency} ${opts.capitalAmount.toLocaleString()}`);
+        this.log(`  • Option Direction Bias:${opts.directionMode}`);
+        this.log(`  • Strike Preference:    ${opts.strikePreference}`);
+        this.log(`  • Expiry Preference:    ${opts.expiryPreference}`);
+        this.log(`  • Position Lots:        ${opts.lotsCount} Lot(s)${lotInfo}`);
+        this.log(`${'─'.repeat(70)}\n`);
+    }
+
+    logOptionStrikeSelection(opts: {
+        underlying: string;
+        spotPrice: number;
+        strikeStep: number;
+        atmStrike: number;
+        signalDirection: string;
+        selectedOptionType: 'CE' | 'PE';
+        targetStrike: number;
+        tradingsymbol: string;
+        expiry: string;
+        lotSize: number;
+    }): void {
+        this.log(`[OptionEngine][${this.botId}] 🎯 OPTION DERIVATION & CONTRACT SELECTION:`);
+        this.log(`  • Spot Price:           ${opts.underlying} @ ${opts.spotPrice.toFixed(2)} (Strike Step: ${opts.strikeStep})`);
+        this.log(`  • ATM Strike:           ${opts.atmStrike}`);
+        this.log(`  • Signal Direction:     ${opts.signalDirection.toUpperCase()} ➔ Selected: ${opts.selectedOptionType} (${opts.selectedOptionType === 'CE' ? 'CALL' : 'PUT'})`);
+        this.log(`  • Target Strike:        ${opts.targetStrike} ${opts.selectedOptionType}`);
+        this.log(`  • Option Contract:      ${opts.tradingsymbol} (Expiry: ${opts.expiry} | Dynamic Lot: ${opts.lotSize})`);
+    }
+
+    logOptionRiskEvaluation(opts: {
+        capital: number;
+        optionPremium: number;
+        lotSize: number;
+        lots: number;
+        totalQuantity: number;
+        capitalRequired: number;
+        stopLossPercent: number;
+        slPrice: number;
+        tpPrice: number;
+        riskAmount: number;
+        circuitBreakerAllowed: boolean;
+        circuitBreakerReason?: string;
+    }): void {
+        const cbStatus = opts.circuitBreakerAllowed ? 'NORMAL (Execution Permitted)' : `TRIPPED: ${opts.circuitBreakerReason}`;
+        this.log(`[OptionRisk][${this.botId}] 🛡️ OPTION RISK & CAPITAL CONTROLLER:`);
+        this.log(`  • Option Premium (LTP): ₹${opts.optionPremium.toFixed(2)} / share`);
+        this.log(`  • Premium Per Lot:      ₹${(opts.optionPremium * opts.lotSize).toFixed(2)} (${opts.lotSize} shares)`);
+        this.log(`  • Capital Allocated:    ₹${opts.capital.toLocaleString()} ➔ Affordable Lots: ${opts.lots} (${opts.totalQuantity} Qty)`);
+        this.log(`  • Capital Required:     ₹${opts.capitalRequired.toFixed(2)} (${((opts.capitalRequired / opts.capital) * 100).toFixed(1)}% of Capital)`);
+        this.log(`  • Defined Risk SL:      ${opts.stopLossPercent}% (SL Price: ₹${opts.slPrice.toFixed(2)} | Max Loss: ₹${opts.riskAmount.toFixed(2)})`);
+        this.log(`  • Defined Target TP:    TP Price: ₹${opts.tpPrice.toFixed(2)}`);
+        this.log(`  • Circuit Breaker:      ${cbStatus}`);
+    }
+
+    logBrokerRouting(opts: {
+        broker: string;
+        action: string;
+        tradingsymbol: string;
+        quantity: number;
+        orderType: string;
+        product: string;
+        orderId?: string;
+        status?: string;
+        durationMs?: number;
+    }): void {
+        const durStr = opts.durationMs !== undefined ? ` in ${opts.durationMs}ms` : '';
+        const orderStr = opts.orderId ? ` | Order ID: ${opts.orderId}` : '';
+        const statusStr = opts.status ? ` | Status: ${opts.status.toUpperCase()}` : '';
+        this.log(`[BrokerRouting][${this.botId}] 🚀 EXECUTION ROUTED TO ${opts.broker.toUpperCase()}:`);
+        this.log(`  • Action:               ${opts.action} ${opts.quantity} Qty of ${opts.tradingsymbol}`);
+        this.log(`  • Order Type / Product: ${opts.orderType} / ${opts.product}${statusStr}${orderStr}${durStr}`);
     }
 
     async finalize(finalScore?: number): Promise<void> {

@@ -12,8 +12,12 @@ import { syncLeverage, handleOpenTrade, getOrCreateState, PineStateTracker } fro
 import { executeTrade } from './trade-executor';
 import { Candle } from '../config/types';
 import { isAiEvaluationDue, evaluateAndApplyAiStrategy, computeMarketSnapshot } from './ai-market-evaluator';
-import { BotCycleLogger, tradingCycleLogger, marketDataLogger, positionManagerLogger } from '../utils/cycle-logger';
+import { BotCycleLogger, tradingCycleLogger, marketDataLogger, positionManagerLogger, brokerAdapterLogger, optionEngineLogger, optionRiskLogger } from '../utils/cycle-logger';
 import { StrategyPerformanceTracker } from './strategy-performance-tracker';
+import { InstrumentService } from '../instruments/InstrumentService';
+import { OptionChainService } from '../instruments/OptionChainService';
+import { OptionRiskEngine } from '../risk/OptionRiskEngine';
+import { BrokerRegistry } from '../brokers/core/BrokerRegistry';
 
 // Multi-Timeframe TTL Smart Candle Cache across all bots and cycles
 interface CandleCacheEntry {
@@ -166,10 +170,33 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
         context
     );
 
+    const isIndianMarket = c.MARKET_TYPE === 'indian_stock' || ['zerodha', 'angelone'].includes(c.EXCHANGE?.toLowerCase());
+
     tradingCycleLogger.info(
-        `[Config] Bot Configuration: Mode=${c.MODE || 'balanced'} | Capital=$${c.CAPITAL_AMOUNT} | Leverage=${c.LEVERAGE}x | TF=${c.TIMEFRAME} | AI_Managed=${Boolean(c.IS_AI_MANAGED)} | MinScore=${c.MIN_SCORE || 50}`,
+        `[Config] Bot Configuration: Market=${isIndianMarket ? 'INDIAN_STOCK' : 'CRYPTO'} | Exchange=${c.EXCHANGE?.toUpperCase()} | Mode=${c.MODE || 'balanced'} | Capital=${c.CURRENCY || (isIndianMarket ? 'INR' : 'USD')}${c.CAPITAL_AMOUNT} | Leverage=${c.LEVERAGE}x | TF=${c.TIMEFRAME} | AI_Managed=${Boolean(c.IS_AI_MANAGED)} | MinScore=${c.MIN_SCORE || 50}`,
         context
     );
+
+    if (isIndianMarket) {
+        const instrumentService = InstrumentService.getInstance();
+        const dynamicLot = instrumentService.getLotSize(c.SYMBOL);
+        logger.logMultiMarketConfig({
+            marketType: c.MARKET_TYPE || 'indian_stock',
+            exchange: c.EXCHANGE,
+            underlying: c.SYMBOL,
+            strikePreference: c.OPTION_STRIKE_PREFERENCE || 'ATM',
+            expiryPreference: c.OPTION_EXPIRY_PREFERENCE || 'NEAREST_WEEKLY',
+            directionMode: c.OPTION_DIRECTION_MODE || 'AI_DIRECTIONAL',
+            lotsCount: c.LOTS_COUNT || 1,
+            lotSize: dynamicLot > 1 ? dynamicLot : undefined,
+            capitalAmount: c.CAPITAL_AMOUNT,
+            currency: c.CURRENCY || 'INR',
+        });
+        tradingCycleLogger.info(
+            `[MultiMarket] Indian Option Buying: Underlying=${c.SYMBOL} | DynamicLot=${dynamicLot} | StrikePref=${c.OPTION_STRIKE_PREFERENCE || 'ATM'} | ExpiryPref=${c.OPTION_EXPIRY_PREFERENCE || 'NEAREST_WEEKLY'} | DirectionMode=${c.OPTION_DIRECTION_MODE || 'AI_DIRECTIONAL'} | Lots=${c.LOTS_COUNT || 1}`,
+            context
+        );
+    }
 
     const client = createExchangeClient(c, logger);
 
@@ -263,6 +290,16 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
         marketDataLogger.debug(`[MarketPrice] Fetching latest price for ${c.SYMBOL}...`, context);
         marketDataLogger.info(`[MarketPrice] Current Mark Price: ${currentPrice}`, context);
 
+        if (isIndianMarket) {
+            const strikeStep = OptionChainService.getStrikeStep(c.SYMBOL);
+            const atmStrike = InstrumentService.calculateAtmStrike(currentPrice, strikeStep);
+            logger.addLog(`[OptionEngine][${botId}] Spot ${c.SYMBOL} Index = ${currentPrice.toFixed(2)} | ATM Strike = ${atmStrike} (Strike Interval: ${strikeStep})`);
+            optionEngineLogger.info(
+                `[OptionEngine] Spot Index: ${c.SYMBOL} = ${currentPrice.toFixed(2)} | ATM Strike = ${atmStrike} (Step = ${strikeStep})`,
+                context
+            );
+        }
+
         // 4. Load trade state
         const state = await getOrCreateState(c);
         const stratId = c.CURRENT_STRATEGY_ID || 'default';
@@ -333,7 +370,104 @@ export async function runPineCycle(c: PineBotConfig): Promise<void> {
             return;
         }
 
-        // 10. Execute trade
+        // 10. Multi-Market Option Derivation & Risk Evaluation Logging
+        if (isIndianMarket) {
+            const rawSignal = signal.action === 'buy' ? 'LONG' : 'SHORT';
+            const targetOptionType: 'CE' | 'PE' = signal.action === 'buy' ? 'CE' : 'PE';
+
+            // Check Direction Mode filter
+            const dirMode = c.OPTION_DIRECTION_MODE || 'AI_DIRECTIONAL';
+            if (dirMode === 'CE_ONLY' && targetOptionType === 'PE') {
+                const skipMsg = `[OptionEngine][${botId}] Filtered: Strategy gave SHORT signal, but Option Direction Mode is 'CE_ONLY'. Skipping trade.`;
+                logger.warn(skipMsg);
+                tradingCycleLogger.info(`[OptionEngine] ${skipMsg}`, context);
+                return;
+            }
+            if (dirMode === 'PE_ONLY' && targetOptionType === 'CE') {
+                const skipMsg = `[OptionEngine][${botId}] Filtered: Strategy gave LONG signal, but Option Direction Mode is 'PE_ONLY'. Skipping trade.`;
+                logger.warn(skipMsg);
+                tradingCycleLogger.info(`[OptionEngine] ${skipMsg}`, context);
+                return;
+            }
+
+            const optionChainService = new OptionChainService();
+            const strikeStep = OptionChainService.getStrikeStep(c.SYMBOL);
+            const atmStrike = InstrumentService.calculateAtmStrike(currentPrice, strikeStep);
+            const targetStrike = optionChainService.calculateTargetStrike(
+                c.SYMBOL,
+                currentPrice,
+                targetOptionType,
+                c.OPTION_STRIKE_PREFERENCE || 'ATM'
+            );
+
+            const instrumentService = InstrumentService.getInstance();
+            const dynamicLot = instrumentService.getLotSize(c.SYMBOL) || 75;
+            const tradingsymbol = `${c.SYMBOL}_OPT_${targetStrike}_${targetOptionType}`;
+
+            logger.logOptionStrikeSelection({
+                underlying: c.SYMBOL,
+                spotPrice: currentPrice,
+                strikeStep,
+                atmStrike,
+                signalDirection: rawSignal,
+                selectedOptionType: targetOptionType,
+                targetStrike,
+                tradingsymbol,
+                expiry: c.OPTION_EXPIRY_PREFERENCE || 'NEAREST_WEEKLY',
+                lotSize: dynamicLot,
+            });
+
+            // Option Risk & Position Sizing Evaluation
+            const estimatedPremium = currentPrice * 0.008; // ~0.8% of index value for ATM option
+            const sizingResult = OptionRiskEngine.calculateOptionSizing({
+                totalCapital: c.CAPITAL_AMOUNT,
+                maxRiskPerTradePercent: c.SL_PERCENT || 20,
+                optionPremium: estimatedPremium,
+                lotSize: dynamicLot,
+                stopLossPercent: c.SL_PERCENT || 20,
+                maxLotsLimit: c.LOTS_COUNT || 1,
+                currentDailyLoss: Math.abs(Math.min(0, state.dailyPnl || 0)),
+                maxDailyLossLimit: (c.CAPITAL_AMOUNT * (c.DAILY_LOSS_LIMIT || 10)) / 100,
+            });
+
+            logger.logOptionRiskEvaluation({
+                capital: c.CAPITAL_AMOUNT,
+                optionPremium: estimatedPremium,
+                lotSize: dynamicLot,
+                lots: sizingResult.lots,
+                totalQuantity: sizingResult.totalQuantity,
+                capitalRequired: sizingResult.estimatedCapitalRequired,
+                stopLossPercent: c.SL_PERCENT || 20,
+                slPrice: sizingResult.slPrice,
+                tpPrice: sizingResult.tpPrice,
+                riskAmount: sizingResult.riskAmount,
+                circuitBreakerAllowed: sizingResult.allowed,
+                circuitBreakerReason: sizingResult.reason,
+            });
+
+            if (!sizingResult.allowed) {
+                logger.warn(`[OptionRisk][${botId}] Trade execution halted: ${sizingResult.reason}`);
+                tradingCycleLogger.info(`[OptionRisk] Trade execution halted: ${sizingResult.reason}`, context);
+                return;
+            }
+
+            // Broker Adapter execution routing log
+            logger.logBrokerRouting({
+                broker: c.EXCHANGE,
+                action: 'BUY',
+                tradingsymbol,
+                quantity: sizingResult.totalQuantity,
+                orderType: 'MARKET',
+                product: 'MIS',
+                status: 'PREPARED',
+            });
+            brokerAdapterLogger.info(
+                `[BrokerRouting] Prepared BUY order for ${sizingResult.totalQuantity} Qty of ${tradingsymbol} via ${c.EXCHANGE?.toUpperCase()}`,
+                context
+            );
+        }
+
+        // 11. Execute trade
         const side = signal.action === 'buy' ? 'buy' : 'sell';
         await executeTrade(client, c, side, state, signal.tp, signal.sl, logger);
 

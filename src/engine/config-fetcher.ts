@@ -160,6 +160,16 @@ export async function fetchActivePineBots(): Promise<PineBotConfig[]> {
             AI_REASONING:              bot.AI_REASONING,
             LAST_AI_EVALUATION:        bot.LAST_AI_EVALUATION,
             NEXT_AI_EVALUATION:        bot.NEXT_AI_EVALUATION,
+
+            MARKET_TYPE:               bot.MARKET_TYPE || (['zerodha', 'angelone'].includes(bot.EXCHANGE?.toLowerCase()) ? 'indian_stock' : 'crypto'),
+            CURRENCY:                  bot.CURRENCY || (['zerodha', 'angelone'].includes(bot.EXCHANGE?.toLowerCase()) ? 'INR' : 'USD'),
+            OPTION_STRIKE_PREFERENCE:  bot.OPTION_STRIKE_PREFERENCE || 'ATM',
+            OPTION_EXPIRY_PREFERENCE:  bot.OPTION_EXPIRY_PREFERENCE || 'NEAREST_WEEKLY',
+            OPTION_DIRECTION_MODE:     bot.OPTION_DIRECTION_MODE || 'AI_DIRECTIONAL',
+            LOTS_COUNT:                Number(bot.LOTS_COUNT || 1),
+            CLIENT_CODE:               bot.CLIENT_CODE,
+            MPIN:                      bot.MPIN,
+            TOTP_SECRET:               bot.TOTP_SECRET,
         } satisfies PineBotConfig;
     });
 
