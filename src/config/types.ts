@@ -52,9 +52,9 @@ export interface PineBotConfig {
     LAST_AI_EVALUATION?: string;
     NEXT_AI_EVALUATION?: string;
 
-    // Multi-Market & Indian Stock Options (Zerodha / Angel One)
-    MARKET_TYPE?: 'crypto' | 'crypto_options' | 'indian_stock' | 'indian_futures' | 'indian_equity';
-    CURRENCY?: 'USD' | 'INR';
+    // Multi-Market & Global Equities, Options, Crypto, Forex
+    MARKET_TYPE?: 'crypto' | 'crypto_options' | 'indian_stock' | 'indian_futures' | 'indian_equity' | 'us_equity' | 'us_options' | 'forex';
+    CURRENCY?: 'USD' | 'INR' | 'GBP' | 'EUR';
     OPTION_STRIKE_PREFERENCE?: 'ATM' | 'ITM1' | 'ITM2' | 'OTM1';
     OPTION_EXPIRY_PREFERENCE?: 'NEAREST_WEEKLY' | 'NEXT_WEEKLY' | 'MONTHLY';
     OPTION_DIRECTION_MODE?: 'AI_DIRECTIONAL' | 'CE_ONLY' | 'PE_ONLY';
@@ -147,9 +147,9 @@ export interface RawActiveBot {
     LAST_AI_EVALUATION?: string;
     NEXT_AI_EVALUATION?: string;
 
-    // Multi-Market & Indian Stock Options
-    MARKET_TYPE?: 'crypto' | 'crypto_options' | 'indian_stock' | 'indian_futures' | 'indian_equity';
-    CURRENCY?: 'USD' | 'INR';
+    // Multi-Market & Global Equities, Options, Crypto, Forex
+    MARKET_TYPE?: 'crypto' | 'crypto_options' | 'indian_stock' | 'indian_futures' | 'indian_equity' | 'us_equity' | 'us_options' | 'forex';
+    CURRENCY?: 'USD' | 'INR' | 'GBP' | 'EUR';
     OPTION_STRIKE_PREFERENCE?: 'ATM' | 'ITM1' | 'ITM2' | 'OTM1';
     OPTION_EXPIRY_PREFERENCE?: 'NEAREST_WEEKLY' | 'NEXT_WEEKLY' | 'MONTHLY';
     OPTION_DIRECTION_MODE?: 'AI_DIRECTIONAL' | 'CE_ONLY' | 'PE_ONLY';
