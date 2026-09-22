@@ -53,12 +53,17 @@ export interface PineBotConfig {
     NEXT_AI_EVALUATION?: string;
 
     // Multi-Market & Indian Stock Options (Zerodha / Angel One)
-    MARKET_TYPE?: 'crypto' | 'indian_stock';
+    MARKET_TYPE?: 'crypto' | 'crypto_options' | 'indian_stock' | 'indian_futures' | 'indian_equity';
     CURRENCY?: 'USD' | 'INR';
     OPTION_STRIKE_PREFERENCE?: 'ATM' | 'ITM1' | 'ITM2' | 'OTM1';
     OPTION_EXPIRY_PREFERENCE?: 'NEAREST_WEEKLY' | 'NEXT_WEEKLY' | 'MONTHLY';
     OPTION_DIRECTION_MODE?: 'AI_DIRECTIONAL' | 'CE_ONLY' | 'PE_ONLY';
     LOTS_COUNT?: number;
+    PRODUCT_TYPE?: 'CNC' | 'MIS' | 'NRML';
+    IS_TRAILING_SL_ENABLED?: boolean;
+    TRAILING_SL_CALLBACK_PERCENT?: number;
+    IS_INTRADAY_SQUARE_OFF_ENABLED?: boolean;
+    INTRADAY_SQUARE_OFF_TIME?: string;
     CLIENT_CODE?: string;
     MPIN?: string;
     TOTP_SECRET?: string;
@@ -143,12 +148,17 @@ export interface RawActiveBot {
     NEXT_AI_EVALUATION?: string;
 
     // Multi-Market & Indian Stock Options
-    MARKET_TYPE?: 'crypto' | 'indian_stock';
+    MARKET_TYPE?: 'crypto' | 'crypto_options' | 'indian_stock' | 'indian_futures' | 'indian_equity';
     CURRENCY?: 'USD' | 'INR';
     OPTION_STRIKE_PREFERENCE?: 'ATM' | 'ITM1' | 'ITM2' | 'OTM1';
     OPTION_EXPIRY_PREFERENCE?: 'NEAREST_WEEKLY' | 'NEXT_WEEKLY' | 'MONTHLY';
     OPTION_DIRECTION_MODE?: 'AI_DIRECTIONAL' | 'CE_ONLY' | 'PE_ONLY';
     LOTS_COUNT?: number;
+    PRODUCT_TYPE?: 'CNC' | 'MIS' | 'NRML';
+    IS_TRAILING_SL_ENABLED?: boolean;
+    TRAILING_SL_CALLBACK_PERCENT?: number;
+    IS_INTRADAY_SQUARE_OFF_ENABLED?: boolean;
+    INTRADAY_SQUARE_OFF_TIME?: string;
     CLIENT_CODE?: string;
     MPIN?: string;
     TOTP_SECRET?: string;
